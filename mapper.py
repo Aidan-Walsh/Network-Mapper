@@ -41,10 +41,13 @@ try:
     networks = []
     for info in interfaces_info:
       interface_rest = info.split(": ")
+      print(interface_rest)
       interfaces.append(interface_rest[0])
       
       inet_rest = interface_rest[1].split("inet ")
+      print(inet_rest)
       net_rest = inet_rest[1].split(" ")
+      print(net_rest)
       network = net_rest[0]
       networks.append(network)
       
