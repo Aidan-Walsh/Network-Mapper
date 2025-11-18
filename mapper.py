@@ -81,22 +81,29 @@ def get_network_range(ip, mask):
 # get all open ports on the device and their corresponding services and ports
 # return the ports and corresponding ports
 def extract_ports():
-  command = ["ss", "-ntlp", "|", "awk", "-F", "\' \'", "\'{print$4,$6}\'"] # ss -ntlp | awk -F ' ' '{print $4,$6}'
+  command = ["ss", "-ntlp"] # ss -ntlp | awk -F ' ' '{print $4,$6}'
   print(command)
   try:
       result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
       # extract interfaces and IPs
-      print(result)
+      
       output = result.stdout.decode('utf-8')
       print(output)
+      lines_of_interest = output.split("\n")[1:]
+      ports_info = []
+      process_info = []
+      for line in lines_of_interest:
+        split_info = line.split(" ")
+        ports_info.append(split_info[3])
+        process_info.append(split_info[5])
+      
       ports = []
       processes = []
-      lines = output.split("\n")
-      print(lines)
-      for line in lines:
-        halved = line.split(" ")
-        port_data = halved[0]
-        process_data = "".join(halved[1:])
+
+  
+      for index in range(len(ports_info)):
+        port_data = ports_info[index]
+        process_data = process_info[index]
         ip_port = port_data.split(":")
         if ip_port[0] == "0.0.0.0":
           ports.append(ip_port[1])
