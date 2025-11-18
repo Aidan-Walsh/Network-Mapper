@@ -93,10 +93,13 @@ def extract_ports():
       ports_info = []
       process_info = []
       for line in lines_of_interest:
+        
         split_info = line.split(" ")
+        print(split_info)
         ports_info.append(split_info[3])
         process_info.append(split_info[5])
-      
+      print(ports_info)
+      print(process_info)
       ports = []
       processes = []
 
