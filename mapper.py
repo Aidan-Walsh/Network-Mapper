@@ -124,7 +124,7 @@ for network in networks:
   device_ips.append(device_ip)
   network_ranges.append(network_range)
   
-all_info[hostname] = [[interfaces],[device_ips],[masks],[network_ranges]]
+all_info[hostname] = [interfaces,device_ips,masks,network_ranges]
 
 print(all_info)
 
