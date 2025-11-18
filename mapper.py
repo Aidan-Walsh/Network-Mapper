@@ -49,7 +49,7 @@ def extract_private(networks, interfaces):
       returned_networks.append(networks[index])
       returned_interfaces.append(interfaces[index])
       
-    return returned_networks,returned_interfaces
+  return returned_networks,returned_interfaces
       
   
         
