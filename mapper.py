@@ -34,8 +34,9 @@ try:
     
     output = str(result.stdout)
     #print(output)
-    print(output)
+  
     interfaces_info = re.split(r'\\n[0-9]: ',output)
+    print(interfaces_info)
     interfaces = []
     networks = []
     for info in interfaces_info:
