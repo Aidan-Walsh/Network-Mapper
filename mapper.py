@@ -32,7 +32,7 @@ try:
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
     # extract interfaces and IPs
     
-    output = str(result.stdout)
+    output = "\\n" + str(result.stdout)
     #print(output)
   
     interfaces_info = re.split(r'\\n[0-9]: ',output)
