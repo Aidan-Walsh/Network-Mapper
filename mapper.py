@@ -77,6 +77,8 @@ with open("credentials.txt", "r") as file_obj:
       
 all_networks, all_interfaces = extract_networks()
 networks,interfaces = extract_private(all_networks,all_interfaces)
+print(networks)
+print(interfaces)
       
       
       
