@@ -98,8 +98,9 @@ def extract_ports():
         split_info = line.split(" ")
         filtered_info = [item for item in split_info if item != ""]
         print(filtered_info)
-        ports_info.append(filtered_info[3])
-        process_info.append(filtered_info[5])
+        if len(filtered_info) > 5:
+          ports_info.append(filtered_info[3])
+          process_info.append(filtered_info[5])
       print(ports_info)
       print(process_info)
       ports = []
