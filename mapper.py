@@ -1,4 +1,5 @@
 import subprocess
+import re
 
 
 
@@ -25,11 +26,32 @@ with open("credentials.txt", "r") as file_obj:
 # user should be sudo'd into pivot with "sudo su"
 
 sudo_password = "your_sudo_password"  # Replace with your actual password (use with caution!)
-command = ["ifconfig"]
+command = ["ip", "a"]
 
 try:
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE)   
-    print(result)
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+    # extract interfaces and IPs
+    
+    output = str(result.stdout)
+    #print(output)
+    print(output)
+    interfaces_info = re.split(r'\\n[0-9]: ',output)
+    interfaces = []
+    networks = []
+    for info in interfaces_info:
+      interface_rest = info.split(": ")
+      interfaces.append(interface_rest[0])
+      
+      inet_rest = interface_rest[1].split("inet ")
+      net_rest = inet_rest[1].split(" ")
+      network = net_rest[0]
+      networks.append(network)
+      
+    print(networks)
+    print(interfaces)
+      
+      
+    
 
 except Exception as e:
     print(f"An error occurred: {e}")
