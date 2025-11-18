@@ -43,7 +43,9 @@ def extract_private(networks, interfaces):
   returned_interfaces = []
   for index in range(len(networks)):
     octets = networks[index].split(".")
+    print(octets)
     if int(octets[0]) == 10 or (int(octets[0] == 172) and int(octets[1]) == 16) or (int(octets[0] == 192) and int(octets[1]) == 168):
+      print("found match")
       returned_networks.append(networks[index])
       returned_interfaces.append(interfaces[index])
       
