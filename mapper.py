@@ -88,17 +88,18 @@ def extract_ports():
       # extract interfaces and IPs
       
       output = result.stdout.decode('utf-8')
-      print(output.encode('utf-8'))
+      print(output)
       lines_of_interest = output.split("\n")[1:]
       print(lines_of_interest)
       ports_info = []
       process_info = []
       for line in lines_of_interest:
         
-        split_info = line.split("\t")
-        print(split_info)
-        ports_info.append(split_info[3])
-        process_info.append(split_info[5])
+        split_info = line.split(" ")
+        filtered_info = [item for item in split_info if item != " "]
+        print(filtered_info)
+        ports_info.append(filtered_info[3])
+        process_info.append(filtered_info[5])
       print(ports_info)
       print(process_info)
       ports = []
