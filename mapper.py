@@ -76,8 +76,38 @@ def get_network_range(ip, mask):
   first_device = (math.floor(last_octet / range) * range) + 1
   last_device = (math.floor(last_octet / range) * range) + (range - 2)
   return [first_device, last_device]
+
+
+# get all open ports on the device and their corresponding services and ports
+# return the ports and corresponding ports
+def extract_ports():
+  command = ["ss", "-ntlp", "|", "awk", "-F", "' '", "'{print$4,$6}'"] # ss -ntlp | awk -F ' ' '{print $4,$6}'
+  print(command)
+  try:
+      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+      # extract interfaces and IPs
+      output = result.stdout.decode('utf-8')
+      ports = []
+      processes = []
+      lines = output.split("\n")
+      print(lines)
+      for line in lines:
+        halved = line.split(" ")
+        port_data = halved[0]
+        process_data = "".join(halved[1:])
+        ip_port = port_data.split(":")
+        if ip_port[0] == "0.0.0.0":
+          ports.append(ip_port[1])
+          process_split = process_data.split("\"")
+          processes.append(process_split[1])
+      return ports,processes
+      
+  except Exception as e:
+      print(f"An error occurred: {e}")
   
-   
+  
+
+# within the currently SSH'd device, extract all private network information
 def extract_device():
   global all_info
   # look for private networks on machine       
@@ -97,7 +127,9 @@ def extract_device():
     device_ips.append(device_ip)
     network_ranges.append(network_range)
     
-  all_info[hostname] = [interfaces,device_ips,masks,network_ranges]
+  ports, processes = extract_ports()
+    
+  all_info[hostname] = [interfaces,device_ips,masks,network_ranges, ports, processes]
 
   print(all_info)
   
@@ -125,7 +157,7 @@ with open("credentials.txt", "r") as file_obj:
       print("Error parsing credentials file")
 
 # dictionary of all devices and their information
-# format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges]]  
+# format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges], [ports], [processes]]  
 # network range format: [first device IP, last device IP]
 all_info = dict()
 extract_device()
