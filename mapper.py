@@ -31,7 +31,7 @@ def extract_networks():
 
           network = net_rest[0]
           networks.append(network)
-          return networks,interfaces
+      return networks,interfaces
   except Exception as e:
       print(f"An error occurred: {e}")
       
