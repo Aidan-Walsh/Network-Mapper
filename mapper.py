@@ -71,7 +71,7 @@ def get_hostname():
  
 def get_network_range(ip, mask):
   last_octet = ip.split(".")[3]
-  square_diff = 32 - mask
+  square_diff = 32 - int(mask)
   range = 2 ** square_diff 
   first_device = (math.floor(last_octet / range) * range) + 1
   last_device = (math.floor(last_octet / range) * range) + (range - 2)
