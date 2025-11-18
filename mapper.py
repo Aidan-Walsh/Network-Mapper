@@ -85,24 +85,20 @@ def extract_ports():
   print(command)
   try:
       result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
-      # extract interfaces and IPs
+      # ports and processes associated to those ports
       
       output = result.stdout.decode('utf-8')
-      print(output)
       lines_of_interest = output.split("\n")[1:]
-      print(lines_of_interest)
       ports_info = []
       process_info = []
       for line in lines_of_interest:
         
         split_info = line.split(" ")
         filtered_info = [item for item in split_info if item != ""]
-        print(filtered_info)
         if len(filtered_info) > 5:
           ports_info.append(filtered_info[3])
           process_info.append(filtered_info[5])
-      print(ports_info)
-      print(process_info)
+
       ports = []
       processes = []
 
