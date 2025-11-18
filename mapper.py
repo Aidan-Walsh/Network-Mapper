@@ -96,7 +96,7 @@ def extract_ports():
       for line in lines_of_interest:
         
         split_info = line.split(" ")
-        filtered_info = [item for item in split_info if item != " "]
+        filtered_info = [item for item in split_info if item != ""]
         print(filtered_info)
         ports_info.append(filtered_info[3])
         process_info.append(filtered_info[5])
