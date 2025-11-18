@@ -76,6 +76,8 @@ with open("credentials.txt", "r") as file_obj:
       print("Error parsing credentials file")
       
 all_networks, all_interfaces = extract_networks()
+print(all_networks)
+print(all_interfaces)
 networks,interfaces = extract_private(all_networks,all_interfaces)
 print(networks)
 print(interfaces)
