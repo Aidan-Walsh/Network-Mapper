@@ -89,7 +89,8 @@ def extract_ports():
       
       output = result.stdout.decode('utf-8')
       print(output)
-      lines_of_interest = output.split("\n")[1:]
+      lines_of_interest = output.split("\n")
+      print(lines_of_interest)
       ports_info = []
       process_info = []
       for line in lines_of_interest:
