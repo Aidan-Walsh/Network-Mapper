@@ -2,6 +2,7 @@ import subprocess
 
 
 
+
 # to be run from the pivot machine 
 credentials_file = "credentials.txt"
 
@@ -24,10 +25,10 @@ with open("credentials.txt", "r") as file_obj:
 # user should be sudo'd into pivot with "sudo su"
 
 sudo_password = "your_sudo_password"  # Replace with your actual password (use with caution!)
-command = ["ip", "a"]
+command = ["ifconfig"]
 
 try:
-    result = subprocess.run(command, check=True, capture_output=True, text=True)   
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE)   
     print(result)
 
 except Exception as e:
