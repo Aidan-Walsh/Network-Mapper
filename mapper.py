@@ -77,8 +77,30 @@ def get_network_range(ip, mask):
   last_device = (math.floor(last_octet / range) * range) + (range - 2)
   return [first_device, last_device]
   
-        
- 
+   
+def extract_device():
+  global all_info
+  # look for private networks on machine       
+  all_networks, all_interfaces = extract_networks()
+  networks,interfaces = extract_private(all_networks,all_interfaces)
+  hostname = get_hostname()
+  device_ips = []
+  masks = []
+  network_ranges = []
+  for network in networks:
+    information = network.split("/")
+    device_ip = information[0]
+    mask = information[1]
+    network_range = get_network_range(device_ip,mask)
+    
+    masks.append(mask)
+    device_ips.append(device_ip)
+    network_ranges.append(network_range)
+    
+  all_info[hostname] = [interfaces,device_ips,masks,network_ranges]
+
+  print(all_info)
+  
         
         
       
@@ -106,27 +128,9 @@ with open("credentials.txt", "r") as file_obj:
 # format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges]]  
 # network range format: [first device IP, last device IP]
 all_info = dict()
+extract_device()
       
-# look for private networks on machine       
-all_networks, all_interfaces = extract_networks()
-networks,interfaces = extract_private(all_networks,all_interfaces)
-hostname = get_hostname()
-device_ips = []
-masks = []
-network_ranges = []
-for network in networks:
-  information = network.split("/")
-  device_ip = information[0]
-  mask = information[1]
-  network_range = get_network_range(device_ip,mask)
-  
-  masks.append(mask)
-  device_ips.append(device_ip)
-  network_ranges.append(network_range)
-  
-all_info[hostname] = [interfaces,device_ips,masks,network_ranges]
 
-print(all_info)
 
 
 # scan network
