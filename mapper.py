@@ -25,9 +25,11 @@ def extract_networks():
       for info in interfaces_info:
         interface_rest = info.split(": ")
         ether_rest = interface_rest[1].split("link/ether ")
+        
+        inet_rest = ether_rest[0].split("inet ")
+        if len(ether_rest) > 1:
+          inet_rest = ether_rest[1].split("inet ")
         print(ether_rest)
-        inet_rest = ether_rest[1].split("inet ")
-
         if len(inet_rest) > 1:
           interfaces.append(interface_rest[0])
           mac = ether_rest[1].split(" ")[0]
