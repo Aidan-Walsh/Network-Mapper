@@ -125,8 +125,8 @@ def extract_ports():
 def extract_device():
   global all_info
   # look for private networks on machine       
-  all_networks, all_interfaces = extract_networks()
-  networks,interfaces,macs = extract_private(all_networks,all_interfaces)
+  all_networks, all_interfaces,macs = extract_networks()
+  networks,interfaces = extract_private(all_networks,all_interfaces)
   hostname = get_hostname()
   device_ips = []
   masks = []
