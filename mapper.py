@@ -25,7 +25,7 @@ def extract_networks():
       for info in interfaces_info:
         interface_rest = info.split(": ")
         ether_rest = interface_rest[1].split("link/ether ")
-
+        print(ether_rest)
         inet_rest = ether_rest[1].split("inet ")
 
         if len(inet_rest) > 1:
