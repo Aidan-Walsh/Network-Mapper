@@ -47,17 +47,20 @@ def extract_networks():
       
 # given a list of networks and their corresponding interfaces, only return the interfaces 
 # and networks that are private that will be scanned        
-def extract_private(networks, interfaces):
+def extract_private(networks, interfaces,macs):
   returned_networks = []
   returned_interfaces = []
+  returned_macs = []
   for index in range(len(networks)):
     octets = networks[index].split(".")
     if int(octets[0]) == 10 or (int(octets[0] == 172) and int(octets[1]) == 16) or (int(octets[0] == 192) and int(octets[1]) == 168):
 
       returned_networks.append(networks[index])
       returned_interfaces.append(interfaces[index])
+      returned_macs.append(macs[index])
       
-  return returned_networks,returned_interfaces
+      
+  return returned_networks,returned_interfaces,returned_macs
 
 #get hostname of current device
 def get_hostname():
@@ -128,8 +131,8 @@ def extract_ports():
 def extract_device():
   global all_info
   # look for private networks on machine       
-  all_networks, all_interfaces,macs = extract_networks()
-  networks,interfaces = extract_private(all_networks,all_interfaces)
+  all_networks, all_interfaces,all_macs = extract_networks()
+  networks,interfaces,macs = extract_private(all_networks,all_interfaces,all_macs)
   hostname = get_hostname()
   device_ips = []
   masks = []
