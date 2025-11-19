@@ -82,7 +82,6 @@ def get_network_range(ip, mask):
 # return the ports and corresponding ports
 def extract_ports():
   command = ["ss", "-ntlp"] # ss -ntlp | awk -F ' ' '{print $4,$6}'
-  print(command)
   try:
       result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
       # ports and processes associated to those ports
