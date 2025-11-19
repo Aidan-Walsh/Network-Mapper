@@ -21,18 +21,22 @@ def extract_networks():
   
       interfaces = []
       networks = []
+      macs = []
       for info in interfaces_info:
         interface_rest = info.split(": ")
+        ether_rest = interface_rest[1].split("link/ether ")
 
-        inet_rest = interface_rest[1].split("inet ")
+        inet_rest = ether_rest[1].split("inet ")
 
         if len(inet_rest) > 1:
           interfaces.append(interface_rest[0])
+          mac = ether_rest[1].split(" ")[0]
+          macs.append(mac)
           net_rest = inet_rest[1].split(" ")
 
           network = net_rest[0]
           networks.append(network)
-      return networks,interfaces
+      return networks,interfaces,macs
   except Exception as e:
       print(f"An error occurred: {e}")
       
@@ -122,7 +126,7 @@ def extract_device():
   global all_info
   # look for private networks on machine       
   all_networks, all_interfaces = extract_networks()
-  networks,interfaces = extract_private(all_networks,all_interfaces)
+  networks,interfaces,macs = extract_private(all_networks,all_interfaces)
   hostname = get_hostname()
   device_ips = []
   masks = []
@@ -139,7 +143,7 @@ def extract_device():
     
   ports, processes = extract_ports()
     
-  all_info[hostname] = [interfaces,device_ips,masks,network_ranges, ports, processes]
+  all_info["".join(macs)] = [interfaces,device_ips,macs,masks,network_ranges, ports, processes, hostname]
 
   print(all_info)
   
@@ -170,12 +174,46 @@ with open("credentials.txt", "r") as file_obj:
 # format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges], [ports], [processes]]  
 # network range format: [first device IP, last device IP]
 all_info = dict()
+already_scanned = dict()
 extract_device()
+
+def scan_network(name):
+  global all_info
+  ranges = all_info[name][3]
+  ip_s = all_info[name][2]
+  command = ["hostname"]
+  try:
+      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+      # extract interfaces and IPs
+      output = result.stdout.decode('utf-8')
+      name = output.split(".")[0]
+      return name
+  except Exception as e:
+      print(f"An error occurred: {e}")
+
+'''
+#!/bin/bash
+echo "First 3 octets of network address (e.g. 192.168.0): "
+read net
+echo "Starting host range (e.g. 1): "
+read start
+echo "Ending host range (e.g. 254): "
+read end
+echo "TCP ports space-delimited (e.g. 21-23 80): "
+read ports
+for ((i=$start; i<=$end; i++))
+do
+    nc -nvzw1 $net.$i $ports 2>&1 | grep -E 'succ|open' &
+done
+wait
+'''
       
+# now perform scan of found private network
 
 
 
-# scan network
+
+
 
       
       
