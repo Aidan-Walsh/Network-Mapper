@@ -176,7 +176,7 @@ def scan_network(joined_macs):
           # extract interfaces and IPs
           output = result.stdout.decode('utf-8')
           
-          print(output)
+          print(result)
          
       except Exception as e:
           print(f"An error occurred: {e}")   
