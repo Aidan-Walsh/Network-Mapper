@@ -153,9 +153,9 @@ def extract_device():
       
     all_info["".join(macs)] = [interfaces,device_ips,macs,masks,network_ranges, ports, processes, hostname]
     print(all_info)
-    return True
+    return True,"".join(macs)
   else:
-    return False
+    return False,""
 
   
   
@@ -207,10 +207,10 @@ with open("credentials.txt", "r") as file_obj:
 # network range format: [first device IP, last device IP]
 all_info = dict()
 
-success = extract_device()
+success, joined_macs = extract_device()
 
 if success:
-  scan_network()
+  scan_network(joined_macs)
 
 
 
