@@ -174,9 +174,9 @@ def scan_network(joined_macs):
       try:
           result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
           # extract interfaces and IPs
-          output = result.stdout.decode('utf-8')
+          output = result.stderr.decode('utf-8')
           
-          print(result)
+          print(output)
          
       except Exception as e:
           print(f"An error occurred: {e}")   
