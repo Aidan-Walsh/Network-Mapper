@@ -168,7 +168,7 @@ def scan_network(joined_macs):
   for index in range(len(ips)):
     first_three_octets = ips[index].split(".")[:3]
     first_three_octets = ".".join(first_three_octets) + "."
-    command = "for i in {ranges[index][0]..ranges[index][1]} ;do (ping -c 1 " + first_three_octets  + "$i | grep \"bytes from\" &) 2>/dev/null ;done"
+    command = "for i in {" + str(ranges[index][0]) + ".." + str(ranges[index][1]) + "} ;do (ping -c 1 " + first_three_octets  + "$i | grep \"bytes from\" &) 2>/dev/null ;done"
     try:
           result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
           # extract interfaces and IPs
