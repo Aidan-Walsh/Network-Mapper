@@ -169,7 +169,7 @@ def scan_network(joined_macs):
     first_three_octets = ips[index].split(".")[:3]
     first_three_octets = ".".join(first_three_octets) + "."
     for last_octet in range(ranges[index][0], ranges[index][1]):
-      command = ["nc","-nvzw1",first_three_octets + last_octet,"21-23","80"]
+      command = ["nc","-nvzw1",first_three_octets + str(last_octet),"21-23","80"]
  
       try:
           result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
