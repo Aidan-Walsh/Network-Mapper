@@ -128,30 +128,36 @@ def extract_ports():
   
 
 # within the currently SSH'd device, extract all private network information
+# if this device has been scanned before, then return false, else true
 def extract_device():
   global all_info
   # look for private networks on machine       
   all_networks, all_interfaces,all_macs = extract_networks()
   networks,interfaces,macs = extract_private(all_networks,all_interfaces,all_macs)
-  hostname = get_hostname()
-  device_ips = []
-  masks = []
-  network_ranges = []
-  for network in networks:
-    information = network.split("/")
-    device_ip = information[0]
-    mask = information[1]
-    network_range = get_network_range(device_ip,mask)
-    
-    masks.append(mask)
-    device_ips.append(device_ip)
-    network_ranges.append(network_range)
-    
-  ports, processes = extract_ports()
-    
-  all_info["".join(macs)] = [interfaces,device_ips,macs,masks,network_ranges, ports, processes, hostname]
+  if "".join(macs) not in all_info:
+    hostname = get_hostname()
+    device_ips = []
+    masks = []
+    network_ranges = []
+    for network in networks:
+      information = network.split("/")
+      device_ip = information[0]
+      mask = information[1]
+      network_range = get_network_range(device_ip,mask)
+      
+      masks.append(mask)
+      device_ips.append(device_ip)
+      network_ranges.append(network_range)
+      
+    ports, processes = extract_ports()
+      
+    all_info["".join(macs)] = [interfaces,device_ips,macs,masks,network_ranges, ports, processes, hostname]
+    print(all_info)
+    return True
+  else:
+    return False
 
-  print(all_info)
+  
   
         
         
@@ -180,22 +186,33 @@ with open("credentials.txt", "r") as file_obj:
 # format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges], [ports], [processes]]  
 # network range format: [first device IP, last device IP]
 all_info = dict()
-already_scanned = dict()
-extract_device()
 
-def scan_network(name):
+success = extract_device()
+
+if success:
+  scan_network()
+
+def scan_network(joined_macs):
   global all_info
-  ranges = all_info[name][3]
-  ip_s = all_info[name][2]
-  command = ["hostname"]
-  try:
-      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
-      # extract interfaces and IPs
-      output = result.stdout.decode('utf-8')
-      name = output.split(".")[0]
-      return name
-  except Exception as e:
-      print(f"An error occurred: {e}")
+  ranges = all_info[joined_macs][4]
+  ips = all_info[joined_macs][1]
+  macs = all_info[joined_macs][2]
+  
+  for index in range(len(ips)):
+    first_three_octets = ips[index].split(".")[:3]
+    first_three_octets = ".".join(first_three_octets) + "."
+    for last_octet in range(ranges[index][0], ranges[index][1]):
+      command = ["nc","-nvzw1",first_three_octets + last_octet,"21-23 80"]
+ 
+      try:
+          result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+          # extract interfaces and IPs
+          output = result.stdout.decode('utf-8')
+          
+          print(output)
+         
+      except Exception as e:
+          print(f"An error occurred: {e}")
 
 '''
 #!/bin/bash
