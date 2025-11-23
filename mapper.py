@@ -170,7 +170,8 @@ def scan_network(joined_macs):
     first_three_octets = ".".join(first_three_octets) + "."
     command = "for i in {" + str(ranges[index][0]) + ".." + str(ranges[index][1]) + "} ;do (ping -c 1 " + first_three_octets  + "$i | grep \"bytes from\" &) 2>/dev/null ;done"
     try:
-          result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
+          print(command)
+          result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
           # extract interfaces and IPs
           #output = result.stderr.decode('utf-8')
           
