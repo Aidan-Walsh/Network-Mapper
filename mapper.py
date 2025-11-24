@@ -167,7 +167,7 @@ def scan_network(joined_macs):
   
   for index in range(len(ips)):
     first_three_octets = ips[index].split(".")[:3]
-    first_three_octets = ".".join(first_three_octets) + "."
+    first_three_octets = ".".join(first_three_octets)
     #current_last_octet = ips[index].split(".")[3] 
     command = "./scanner.sh " + first_three_octets + " " + str(ranges[index][0]) + " " + str(ranges[index][1])
     try:
