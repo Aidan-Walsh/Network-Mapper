@@ -1,2 +1,2 @@
 #!/bin/bash
-for i in $(seq $2 $3) ;do (ping -i 0.1 -c 1 $1.$i | grep "bytes from" &)  2>/dev/null ;done
+nmap -sP --max-retries=1 --host-timeout=100ms $1.$2-$3 | grep $1
