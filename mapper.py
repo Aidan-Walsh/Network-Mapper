@@ -169,7 +169,7 @@ def scan_network(joined_macs):
     first_three_octets = ips[index].split(".")[:3]
     first_three_octets = ".".join(first_three_octets) + "."
     current_last_octet = ips[index].split(".")[3]
-    for last_octet in range(ranges[index][0],ranges[index][1]):
+    for last_octet in range(ranges[index][1], ranges[index][0],-1):
       if last_octet != current_last_octet:
         command = "ping -c 1 " + first_three_octets  + str(last_octet) + "| grep \"bytes from\" &"
         try:
@@ -178,7 +178,7 @@ def scan_network(joined_macs):
               # extract interfaces and IPs
               #output = result.stderr.decode('utf-8')
               
-              #print(result.stdout.read())
+              print(result.stdout)
              
             
         except Exception as e:
