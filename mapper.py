@@ -177,7 +177,11 @@ def scan_network(joined_macs):
               # extract interfaces and IPs
               output = result.stdout.read().decode('utf-8')
               found_ips = re.findall(r'\((.*?)\)', output)
-              print(found_ips)
+              other_ips = []
+              for ip in found_ips:
+                if ip != ips[index]:
+                  other_ips.append(ip)
+              print(other_ips)
        
              
             
