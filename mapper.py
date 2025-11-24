@@ -173,7 +173,7 @@ def scan_network(joined_macs):
       if last_octet != current_last_octet:
         command = "ping -c 1 " + first_three_octets  + str(last_octet) + "| grep \"bytes from\" &"
         try:
-              
+              print(command)
               result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
               # extract interfaces and IPs
               #output = result.stderr.decode('utf-8')
