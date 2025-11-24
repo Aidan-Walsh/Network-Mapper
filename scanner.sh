@@ -1,2 +1,2 @@
 #!/bin/bash
-for i in {$2..$3} ;do (ping -c 1 $1.$i | grep "bytes from" &) 2>/dev/null ;done
+for i in $(seq $2 $3) ;do (ping -c 1 $1.$i | grep "bytes from" &) 2>/dev/null ;done
