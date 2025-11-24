@@ -168,18 +168,21 @@ def scan_network(joined_macs):
   for index in range(len(ips)):
     first_three_octets = ips[index].split(".")[:3]
     first_three_octets = ".".join(first_three_octets) + "."
-    command = "ping -c 1 " + first_three_octets  + "2 | grep \"bytes from\""
-    try:
-          print(command)
-          result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
-          # extract interfaces and IPs
-          #output = result.stderr.decode('utf-8')
-          
-          print(result.stdout.read())
-          print(result.stderr.read())
-         
-    except Exception as e:
-          print(f"An error occurred: {e}")   
+    current_last_octet = ips[index].split(".")[3]
+    for last_octet in range(ranges[index][0],ranges[index][1]):
+      if last_octet != current_last_octet:
+        command = "ping -c 1 " + first_three_octets  + str(last_octet) + "| grep \"bytes from\""
+        try:
+              
+              result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
+              # extract interfaces and IPs
+              #output = result.stderr.decode('utf-8')
+              
+              print(result.stdout.read())
+             
+            
+        except Exception as e:
+              print(f"An error occurred: {e}")   
         
       
 
