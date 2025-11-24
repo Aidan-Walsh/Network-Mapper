@@ -175,7 +175,7 @@ def scan_network(joined_macs):
               result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
               
               # extract interfaces and IPs
-              output = result.stdout.decode('utf-8')
+              output = result.stdout.read().decode('utf-8')
               found_ips = re.findall(r'\((.*?)\)', output)
               print(found_ips)
        
