@@ -171,7 +171,7 @@ def scan_network(joined_macs):
     current_last_octet = ips[index].split(".")[3]
     for last_octet in range(ranges[index][0],ranges[index][1]):
       if last_octet != current_last_octet:
-        command = "ping -c 1 " + first_three_octets  + str(last_octet) + "| grep \"bytes from\""
+        command = "ping -c 1 " + first_three_octets  + str(last_octet) + "| grep \"bytes from\" &"
         try:
               
               result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
