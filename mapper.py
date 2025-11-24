@@ -173,7 +173,7 @@ def scan_network(joined_macs):
     try:
               print(command)
               result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
-              with open("scanner.txt", "r") as file_obj: 
+              with open("scan.txt", "r") as file_obj: 
                 test = file_obj.read()
                 print(test)
               # extract interfaces and IPs
