@@ -209,9 +209,8 @@ def scan_network(joined_macs):
                     process = results[2]
                     ports_processes.append((port,process))
                   else: 
-                    print(line.split("Address:"))
-                    mac = line.split(" ")[2]
-                    print(mac)
+                    print("2")
+                    mac = results.split(" ")[2]
                     found_macs.append(mac)
                     print("after 2")
                   count += 1
