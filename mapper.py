@@ -209,7 +209,7 @@ def scan_network(joined_macs):
                     process = results[2]
                     ports_processes.append((port,process))
                   else: 
-                    print("2")
+                    print(line.split(" "))
                     mac = line.split(" ")[2]
                     print(mac)
                     found_macs.append(mac)
