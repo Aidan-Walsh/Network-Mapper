@@ -204,13 +204,18 @@ def scan_network(joined_macs):
                   print(line)
                   results = line.split(" ")
                   if count != len(output) - 1:
+                    print("1")
                     port = results[0].split("/")[0]
                     process = results[2]
                     ports_processes.append((port,process))
                   else: 
+                    print("2")
                     mac = line.split(" ")[2]
+                    print(mac)
                     found_macs.append(mac)
+                    print("after 2")
                   count += 1
+                print(returned_dict[ips[index]])
                 returned_dict[ips[index]].append(found_macs)
                 returned_dict[ips[index]].append(ports_processes)
                 
