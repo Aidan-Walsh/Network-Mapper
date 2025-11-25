@@ -196,10 +196,12 @@ def scan_network(joined_macs):
       try:
                 result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
                 output = result.stdout.read().decode('utf-8').split("\n")
+                print(output)
                 count = 0
                 ports_processes = []
                 found_macs = []
                 for line in output:
+                  print(line)
                   results = line.split(" ")
                   if count != len(output) - 1:
                     port = results[0].split("/")[0]
