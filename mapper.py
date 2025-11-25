@@ -158,36 +158,72 @@ def extract_device():
     return False,""
 
   
-  
+# scan the internal network for devices, and scan their ports
+# return dictionary of key = value: source ip = [[found_ips],[found_macs], [(ports,service)]]
 def scan_network(joined_macs):
   global all_info
   ranges = all_info[joined_macs][4]
   ips = all_info[joined_macs][1]
-  macs = all_info[joined_macs][2]
-  
+  #macs = all_info[joined_macs][2]
+  other_ips = []
+  returned_dict = dict()
   for index in range(len(ips)):
     first_three_octets = ips[index].split(".")[:3]
     first_three_octets = ".".join(first_three_octets)
-    #current_last_octet = ips[index].split(".")[3] 
+
     command = "./scanner.sh " + first_three_octets + " " + str(ranges[index][0]) + " " + str(ranges[index][1])
     try:
               print(command)
               result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
-              
-              # extract interfaces and IPs
               output = result.stdout.read().decode('utf-8')
               found_ips = re.findall(r'\((.*?)\)', output)
-              other_ips = []
+           
               for ip in found_ips:
                 if ip != ips[index]:
                   other_ips.append(ip)
               print(other_ips)
+              returned_dict[ips[index]] = [other_ips]
        
              
             
     except Exception as e:
               print(f"An error occurred: {e}")   
+              
+    
+    # now scan those individual other_ips for their open ports
+    for ip in other_ips:
+      command = "nmap -Pn " + ip + " | grep -E \"open|MAC\""
+      try:
+                result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
+                output = result.stdout.read().decode('utf-8').split("\n")
+                count = 0
+                ports_processes = []
+                found_macs = []
+                for line in output:
+                  results = line.split(" ")
+                  if count != len(output) - 1:
+                    port = results[0].split("/")[0]
+                    process = results[2]
+                    ports_processes.append((port,process))
+                  else: 
+                    mac = line.split(" ")[2]
+                    found_macs.append(mac)
+                  count += 1
+                returned_dict[ips[index]].append(found_macs)
+                returned_dict[ips[index]].append(ports_processes)
+                
+      
+                  
+                  
         
+              
+              
+      except Exception as e:
+                print(f"An error occurred: {e}")   
+  print(returned_dict)
+  return returned_dict      
+        
+    
       
 
 
