@@ -202,7 +202,7 @@ def scan_network(joined_macs):
                 found_macs = []
                 for line in output:
                   print(line)
-                  results = line.split(" ")
+                  results = line.split()
                   if count != len(output) - 1:
                     print("1")
                     port = results[0].split("/")[0]
