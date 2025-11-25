@@ -195,7 +195,7 @@ def scan_network(joined_macs):
       command = "nmap -Pn " + ip + " | grep -E \"open|MAC\""
       try:
                 result = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr = subprocess.PIPE)
-                output = result.stdout.read().decode('utf-8').split("\n")
+                output = result.stdout.read().decode('utf-8').split("\n")[:-1]
                 print(output)
                 count = 0
                 ports_processes = []
