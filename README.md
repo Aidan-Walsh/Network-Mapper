@@ -142,14 +142,30 @@ The tool automatically detects headless environments and provides full functiona
 
 The tool operates in phases:
 1. **Local Enumeration**: Discover pivot device network configuration
-2. **Network Discovery**: Ping sweep and initial port scanning from pivot
+2. **Enhanced Network Discovery**: Multi-method device discovery from pivot
 3. **Cycle Detection**: Check for already-scanned networks and devices
-4. **Credential Testing**: Attempt SSH access to discovered devices
-5. **Path Analysis**: Determine shortest SSH paths to avoid redundant tunnels
-6. **Tunnel Creation**: Establish SOCKS proxies through optimal SSH paths
-7. **Deep Scanning**: Scan additional networks through tunnels with deduplication
-8. **Topology Analysis**: Identify cross-network connections and potential cycles
-9. **Visualization**: Generate network topology maps showing cycles and connections
+4. **Comprehensive Port Scanning**: TCP/UDP port discovery with multiple techniques
+5. **Credential Testing**: Attempt SSH access to discovered devices
+6. **Path Analysis**: Determine shortest SSH paths to avoid redundant tunnels
+7. **Tunnel Creation**: Establish SOCKS proxies through optimal SSH paths
+8. **Deep Scanning**: Scan additional networks through tunnels with deduplication
+9. **Topology Analysis**: Identify cross-network connections and potential cycles
+10. **Visualization**: Generate network topology maps showing cycles and connections
+
+**Enhanced Network Discovery Methods:**
+1. **ARP Table Scanning**: Fastest method for local network devices
+2. **ICMP Ping Sweep**: Traditional ping discovery (nmap -sn -PE -PP -PM)
+3. **TCP SYN Ping**: Discovery via TCP SYN to ports 22, 80, 443
+4. **TCP ACK Ping**: Discovery via TCP ACK to ports 80, 443
+5. **UDP Ping**: Discovery via UDP to ports 53, 67, 68, 161
+6. **TCP Connect Fallback**: Port-based discovery for ICMP-filtered networks
+
+**Enhanced Port Scanning Techniques:**
+1. **TCP SYN Scan**: Fast stealth scanning of top 1000 ports
+2. **TCP Connect Scan**: Reliable full connection scanning of top 500 ports
+3. **UDP Scan**: Discovery of UDP services on top 100 ports
+4. **Multiple Retry Logic**: Automatic fallback between scan types
+5. **MAC Address Discovery**: Hardware identification where possible
 
 **Cycle Detection Features:**
 - **Network Deduplication**: Prevents re-scanning the same network ranges

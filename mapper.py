@@ -118,12 +118,43 @@ def get_hostname():
  # return [first device IP, last device IP] 
  
 def get_network_range(ip, mask):
-  last_octet = int(ip.split(".")[3])
-  square_diff = 32 - int(mask)
-  range = 2 ** square_diff 
-  first_device = (math.floor(last_octet / range) * range) + 1
-  last_device = (math.floor(last_octet / range) * range) + (range - 2)
-  return [first_device, last_device]
+    """Calculate network range for scanning with proper validation"""
+    try:
+        mask_int = int(mask)
+        if mask_int < 8 or mask_int > 30:
+            logger.warning(f"Unusual subnet mask /{mask_int}, using /24 instead")
+            mask_int = 24
+        
+        octets = ip.split(".")
+        if len(octets) != 4:
+            raise ValueError(f"Invalid IP address format: {ip}")
+            
+        last_octet = int(octets[3])
+        
+        # Calculate network size and range
+        host_bits = 32 - mask_int
+        network_size = 2 ** host_bits
+        
+        # For /24 networks (most common), scan full range
+        if mask_int == 24:
+            return [1, 254]
+        
+        # For other subnet sizes, calculate proper range
+        network_start = (last_octet // network_size) * network_size
+        first_device = network_start + 1
+        last_device = network_start + network_size - 2
+        
+        # Ensure we don't scan outside valid range
+        first_device = max(1, min(first_device, 254))
+        last_device = max(first_device, min(last_device, 254))
+        
+        logger.info(f"Calculated scan range for {ip}/{mask}: {first_device}-{last_device}")
+        return [first_device, last_device]
+        
+    except Exception as e:
+        logger.error(f"Error calculating network range for {ip}/{mask}: {e}")
+        # Fallback to common range
+        return [1, 254]
 
 
 # get all open ports on the device and their corresponding services and ports
@@ -529,42 +560,169 @@ def scan_host_ports_proxy(target_ip, proxy_port):
     
     return [], None
 
-def scan_host_directly(target_ip):
-    """Scan host directly from pivot device"""
-    command = f"nmap -Pn -sS --top-ports 100 {target_ip}"
+def discover_network_devices(network_base, start_range, end_range, pivot_ip):
+    """Enhanced network discovery using multiple methods"""
+    discovered_ips = []
     
+    # Method 1: ARP table scan (fastest for local network)
+    logger.info(f"Scanning network {network_base}.{start_range}-{end_range} using ARP table")
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+        arp_result = subprocess.run("arp -a", shell=True, capture_output=True, text=True, timeout=10)
+        arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', arp_result.stdout)
         
-        ports_processes = []
-        found_mac = None
+        for ip in arp_ips:
+            octets = ip.split('.')
+            if (octets[0] + '.' + octets[1] + '.' + octets[2]) == network_base:
+                last_octet = int(octets[3])
+                if start_range <= last_octet <= end_range and ip != pivot_ip:
+                    discovered_ips.append(ip)
+                    logger.info(f"Found device via ARP: {ip}")
         
-        lines = result.stdout.split('\n')
-        for line in lines:
-            if '/tcp' in line and 'open' in line:
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    port_proto = parts[0]
-                    state = parts[1]
-                    service = parts[2] if len(parts) > 2 else 'unknown'
-                    
-                    if state == 'open':
-                        port = port_proto.split('/')[0]
-                        ports_processes.append((port, service))
-            
-            elif 'MAC Address:' in line:
-                mac_match = re.search(r'MAC Address: ([0-9A-F:]{17})', line)
-                if mac_match:
-                    found_mac = mac_match.group(1)
-        
-        return ports_processes, found_mac
-        
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Direct scan timed out for {target_ip}")
-        return [], None
     except Exception as e:
-        logger.error(f"Error directly scanning {target_ip}: {e}")
-        return [], None
+        logger.warning(f"ARP scan failed: {e}")
+    
+    # Method 2: Enhanced nmap ping sweep
+    network_cidr = f"{network_base}.{start_range}"
+    if end_range == 254:
+        network_cidr = f"{network_base}.0/24"
+    else:
+        # Calculate CIDR for custom range
+        range_size = end_range - start_range + 1
+        cidr_bits = 32 - math.ceil(math.log2(range_size))
+        network_cidr = f"{network_base}.{start_range}/{cidr_bits}"
+    
+    logger.info(f"Performing enhanced ping sweep on {network_cidr}")
+    
+    # Multiple nmap discovery techniques
+    discovery_commands = [
+        f"nmap -sn -PE -PP -PM --max-retries=2 --min-parallelism=100 {network_cidr}",  # ICMP ping sweep
+        f"nmap -sn -PS22,80,443 --max-retries=2 {network_cidr}",  # TCP SYN ping to common ports
+        f"nmap -sn -PA80,443 --max-retries=2 {network_cidr}",     # TCP ACK ping
+        f"nmap -sn -PU53,67,68,161 --max-retries=1 {network_cidr}"  # UDP ping to common ports
+    ]
+    
+    for i, command in enumerate(discovery_commands):
+        try:
+            scan_type = ["ICMP ping", "TCP SYN ping", "TCP ACK ping", "UDP ping"][i]
+            logger.info(f"Running {scan_type} sweep...")
+            
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0:
+                # Extract IPs from nmap output
+                nmap_ips = re.findall(r'Nmap scan report for ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', result.stdout)
+                
+                for ip in nmap_ips:
+                    if ip != pivot_ip and ip not in discovered_ips:
+                        discovered_ips.append(ip)
+                        logger.info(f"Found device via {scan_type}: {ip}")
+                        
+            else:
+                logger.warning(f"{scan_type} sweep failed: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"{scan_type} sweep timed out")
+        except Exception as e:
+            logger.warning(f"Error in {scan_type} sweep: {e}")
+    
+    # Method 3: Fallback TCP connect scan to common ports (for networks that block ICMP)
+    if len(discovered_ips) < 2:  # If we didn't find many devices, try TCP connect
+        logger.info("Few devices found via ping, trying TCP connect scan...")
+        try:
+            tcp_command = f"nmap -sT -Pn --top-ports=10 --max-retries=1 --host-timeout=5s {network_base}.{start_range}-{end_range}"
+            result = subprocess.run(tcp_command, shell=True, capture_output=True, text=True, timeout=180)
+            
+            # Parse TCP scan results
+            current_ip = None
+            for line in result.stdout.split('\n'):
+                if 'Nmap scan report for' in line:
+                    ip_match = re.search(r'([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', line)
+                    if ip_match:
+                        current_ip = ip_match.group(1)
+                elif current_ip and 'open' in line and current_ip != pivot_ip and current_ip not in discovered_ips:
+                    discovered_ips.append(current_ip)
+                    logger.info(f"Found device via TCP connect: {current_ip}")
+                    current_ip = None
+                    
+        except Exception as e:
+            logger.warning(f"TCP connect scan failed: {e}")
+    
+    logger.info(f"Network discovery complete: found {len(discovered_ips)} devices")
+    return discovered_ips
+
+def scan_host_directly(target_ip):
+    """Enhanced host scanning from pivot device"""
+    ports_processes = []
+    found_mac = None
+    
+    # Try multiple scan techniques for better results
+    scan_commands = [
+        f"nmap -Pn -sS --top-ports 1000 {target_ip}",     # SYN scan (fastest, most ports)
+        f"nmap -Pn -sT --top-ports 500 {target_ip}",      # Connect scan (more reliable)
+        f"nmap -Pn -sU --top-ports 100 {target_ip}",      # UDP scan (for UDP services)
+    ]
+    
+    for i, command in enumerate(scan_commands):
+        try:
+            scan_type = ["SYN scan", "TCP connect scan", "UDP scan"][i]
+            logger.info(f"Port scanning {target_ip} using {scan_type}")
+            
+            timeout = [90, 120, 180][i]  # UDP scans need more time
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+            
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                scan_ports = []
+                
+                for line in lines:
+                    # TCP ports
+                    if '/tcp' in line and 'open' in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            port_proto = parts[0]
+                            state = parts[1]
+                            service = parts[2] if len(parts) > 2 else 'unknown'
+                            
+                            if state == 'open':
+                                port = port_proto.split('/')[0]
+                                scan_ports.append((port, service + '/tcp'))
+                    
+                    # UDP ports
+                    elif '/udp' in line and ('open' in line or 'open|filtered' in line):
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            port_proto = parts[0]
+                            state = parts[1]
+                            service = parts[2] if len(parts) > 2 else 'unknown'
+                            
+                            if 'open' in state:
+                                port = port_proto.split('/')[0]
+                                scan_ports.append((port, service + '/udp'))
+                    
+                    # MAC Address
+                    elif 'MAC Address:' in line and not found_mac:
+                        mac_match = re.search(r'MAC Address: ([0-9A-F:]{17})', line)
+                        if mac_match:
+                            found_mac = mac_match.group(1)
+                
+                # Add unique ports to results
+                for port_info in scan_ports:
+                    if port_info not in ports_processes:
+                        ports_processes.append(port_info)
+                
+                if scan_ports:
+                    logger.info(f"{scan_type} found {len(scan_ports)} open ports on {target_ip}")
+                    
+            else:
+                logger.warning(f"{scan_type} failed for {target_ip}: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"{scan_type} timed out for {target_ip}")
+        except Exception as e:
+            logger.warning(f"Error in {scan_type} for {target_ip}: {e}")
+    
+    logger.info(f"Completed scanning {target_ip}: {len(ports_processes)} total open ports")
+    return ports_processes, found_mac
 
 # Enhanced scan function with cycle detection and deduplication  
 # scan the internal network for devices, and scan their ports
@@ -597,34 +755,30 @@ def scan_network(joined_macs):
         first_three_octets = pivot_ip.split(".")[:3]
         first_three_octets = ".".join(first_three_octets)
         
-        # Initial network discovery
-        command = "./scanner.sh " + first_three_octets + " " + str(network_range[0]) + " " + str(network_range[1])
-        discovered_ips = []
+        # Enhanced network discovery using multiple methods
+        discovered_ips = discover_network_devices(
+            first_three_octets, 
+            network_range[0], 
+            network_range[1], 
+            pivot_ip
+        )
         
-        try:
-            logger.info(f"Scanning network range {first_three_octets}.{network_range[0]}-{network_range[1]}")
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
-            
-            found_ips = re.findall(r'\((.*?)\)', result.stdout)
-            
-            for ip in found_ips:
-                if ip != pivot_ip and not is_device_already_discovered(ip):
-                    discovered_ips.append(ip)
-                    
-            logger.info(f"Found {len(discovered_ips)} new devices on network {network_id}")
-            returned_dict[pivot_ip] = [discovered_ips, [], []]
-            
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Network scan timed out for {first_three_octets}")
-            continue
-        except Exception as e:
-            logger.error(f"Error scanning network: {e}")
+        # Filter out already discovered devices
+        new_devices = [ip for ip in discovered_ips if not is_device_already_discovered(ip)]
+        
+        if new_devices:
+            logger.info(f"Found {len(new_devices)} new devices on network {network_id}")
+            returned_dict[pivot_ip] = [new_devices, [], []]
+        else:
+            logger.info(f"No new devices found on network {network_id}")
+            if network_id not in returned_dict:
+                returned_dict[pivot_ip] = [[], [], []]
             continue
     
         # Now scan individual hosts and attempt SSH tunneling
         current_path = [pivot_ip]  # Track path to prevent cycles
         
-        for discovered_ip in discovered_ips:
+        for discovered_ip in new_devices:
             if is_device_already_discovered(discovered_ip):
                 logger.info(f"Device {discovered_ip} already processed, skipping")
                 continue
