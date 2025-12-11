@@ -43,62 +43,125 @@ network_topology = {}  # Complete topology with cross-references
 # user should be sudo'd into pivot with "sudo su"
 
 def extract_networks():
-  command = ["ip", "a"]
+    """Extract network interfaces and their IP addresses"""
+    command = ["ip", "a"]
 
-  try:
-      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
-      # extract interfaces and IPs
-      output = "\n" + result.stdout.decode('utf-8')
-      interfaces_info = re.split(r'[\n][0-9]: ',output)[1:]
-  
-      interfaces = []
-      networks = []
-      macs = []
-      for info in interfaces_info:
-        interface_rest = info.split(": ")
-        ether_rest = interface_rest[1].split("link/ether ")
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) 
+        output = result.stdout.decode('utf-8')
         
-        inet_rest = ether_rest[0].split("inet ")
-        if len(ether_rest) > 1:
-          inet_rest = ether_rest[1].split("inet ")
-        print(ether_rest)
-        if len(inet_rest) > 1 and len(ether_rest) > 1:
-          interfaces.append(interface_rest[0])
-      
-          mac = ether_rest[1].split(" ")[0]
-          macs.append(mac)
-          net_rest = inet_rest[1].split(" ")
-
-          network = net_rest[0]
-          networks.append(network)
-      return networks,interfaces,macs
-  except Exception as e:
-      print(f"An error occurred: {e}")
+        interfaces = []
+        networks = []
+        macs = []
+        
+        logger.info("Extracting network interfaces...")
+        logger.debug(f"ip a output:\n{output}")
+        
+        # Parse each interface block
+        interface_blocks = re.split(r'\n(?=\d+:)', output)
+        
+        for block in interface_blocks:
+            if not block.strip():
+                continue
+                
+            lines = block.strip().split('\n')
+            if not lines:
+                continue
+            
+            # Extract interface name from first line
+            first_line = lines[0]
+            interface_match = re.match(r'\d+:\s*([^:@]+)', first_line)
+            if not interface_match:
+                continue
+                
+            interface_name = interface_match.group(1).strip()
+            
+            # Skip loopback and inactive interfaces
+            if interface_name == 'lo' or 'DOWN' in first_line:
+                continue
+            
+            # Extract IP addresses and MAC from subsequent lines
+            interface_networks = []
+            interface_mac = None
+            
+            for line in lines[1:]:
+                # Look for inet addresses
+                inet_match = re.search(r'inet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/\d+)', line)
+                if inet_match:
+                    network = inet_match.group(1)
+                    interface_networks.append(network)
+                    logger.debug(f"Found network {network} on interface {interface_name}")
+                
+                # Look for MAC address
+                mac_match = re.search(r'link/ether\s+([0-9a-f:]{17})', line, re.IGNORECASE)
+                if mac_match and not interface_mac:
+                    interface_mac = mac_match.group(1)
+                    logger.debug(f"Found MAC {interface_mac} on interface {interface_name}")
+            
+            # Add each network found on this interface
+            for network in interface_networks:
+                interfaces.append(interface_name)
+                networks.append(network)
+                macs.append(interface_mac if interface_mac else "unknown")
+        
+        logger.info(f"Extracted {len(networks)} networks from {len(set(interfaces))} interfaces")
+        for i, (iface, net) in enumerate(zip(interfaces, networks)):
+            logger.info(f"  Interface {iface}: {net}")
+            
+        return networks, interfaces, macs
+        
+    except Exception as e:
+        logger.error(f"Error extracting networks: {e}")
+        return [], [], []
       
     
       
 # given a list of networks and their corresponding interfaces, only return the interfaces 
 # and networks that are private that will be scanned        
-def extract_private(networks, interfaces,macs):
-  returned_networks = []
-  returned_interfaces = []
-  returned_macs = []
-  for index in range(len(networks)):
-    octets = networks[index].split(".")[0].split("/")[0].split(".")  # Handle CIDR notation
-    if len(octets) >= 2:
-      first_octet = int(octets[0])
-      second_octet = int(octets[1]) if len(octets) > 1 else 0
-      
-      # RFC 1918 private address ranges
-      if (first_octet == 10 or 
-          (first_octet == 172 and 16 <= second_octet <= 31) or 
-          (first_octet == 192 and second_octet == 168)):
+def extract_private(networks, interfaces, macs):
+    """Filter for private networks (RFC 1918) with proper parsing"""
+    returned_networks = []
+    returned_interfaces = []
+    returned_macs = []
+    
+    logger.info("Filtering for private networks...")
+    
+    for index in range(len(networks)):
+        network = networks[index]
+        interface = interfaces[index]
+        mac = macs[index]
         
-        returned_networks.append(networks[index])
-        returned_interfaces.append(interfaces[index])
-        returned_macs.append(macs[index])
-      
-  return returned_networks,returned_interfaces,returned_macs
+        try:
+            # Split IP from CIDR notation (e.g., "10.5.0.1/24" -> "10.5.0.1")
+            ip_part = network.split("/")[0]
+            octets = ip_part.split(".")
+            
+            if len(octets) >= 2:
+                first_octet = int(octets[0])
+                second_octet = int(octets[1])
+                
+                # RFC 1918 private address ranges
+                is_private = (
+                    first_octet == 10 or 
+                    (first_octet == 172 and 16 <= second_octet <= 31) or 
+                    (first_octet == 192 and second_octet == 168)
+                )
+                
+                if is_private:
+                    returned_networks.append(network)
+                    returned_interfaces.append(interface)
+                    returned_macs.append(mac)
+                    logger.info(f"Found private network: {network} on interface {interface}")
+                else:
+                    logger.debug(f"Skipping public network: {network}")
+            else:
+                logger.warning(f"Invalid IP format: {network}")
+                
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing network {network}: {e}")
+    
+    logger.info(f"Found {len(returned_networks)} private networks")
+    return returned_networks, returned_interfaces, returned_macs
 
 #get hostname of current device
 def get_hostname():
@@ -199,32 +262,76 @@ def extract_ports():
 # within the currently SSH'd device, extract all private network information
 # if this device has been scanned before, then return false, else true
 def extract_device():
-  global all_info
-  # look for private networks on machine       
-  all_networks, all_interfaces,all_macs = extract_networks()
-  networks,interfaces,macs = extract_private(all_networks,all_interfaces,all_macs)
-  if "".join(macs) not in all_info:
-    hostname = get_hostname()
-    device_ips = []
-    masks = []
-    network_ranges = []
-    for network in networks:
-      information = network.split("/")
-      device_ip = information[0]
-      mask = information[1]
-      network_range = get_network_range(device_ip,mask)
-      
-      masks.append(mask)
-      device_ips.append(device_ip)
-      network_ranges.append(network_range)
-      
-    ports, processes = extract_ports()
-      
-    all_info["".join(macs)] = [interfaces,device_ips,macs,masks,network_ranges, ports, processes, hostname]
-    print(all_info)
-    return True,"".join(macs)
-  else:
-    return False,""
+    """Extract device network information with detailed logging"""
+    global all_info
+    
+    logger.info("=== STARTING DEVICE EXTRACTION ===")
+    
+    # Extract all networks on this machine       
+    all_networks, all_interfaces, all_macs = extract_networks()
+    logger.info(f"Raw extraction found {len(all_networks)} networks: {all_networks}")
+    
+    # Filter for private networks
+    networks, interfaces, macs = extract_private(all_networks, all_interfaces, all_macs)
+    logger.info(f"Private network filtering found {len(networks)} private networks: {networks}")
+    
+    if not networks:
+        logger.error("No private networks found! Check your network configuration.")
+        return False, ""
+    
+    mac_key = "".join(macs)
+    if mac_key not in all_info:
+        hostname = get_hostname()
+        logger.info(f"Device hostname: {hostname}")
+        
+        device_ips = []
+        masks = []
+        network_ranges = []
+        
+        for i, network in enumerate(networks):
+            logger.info(f"Processing network {i+1}/{len(networks)}: {network}")
+            
+            try:
+                information = network.split("/")
+                if len(information) != 2:
+                    logger.error(f"Invalid network format: {network}")
+                    continue
+                    
+                device_ip = information[0]
+                mask = information[1]
+                network_range = get_network_range(device_ip, mask)
+                
+                logger.info(f"  Device IP: {device_ip}")
+                logger.info(f"  Mask: /{mask}")
+                logger.info(f"  Calculated scan range: {network_range[0]}-{network_range[1]}")
+                
+                masks.append(mask)
+                device_ips.append(device_ip)
+                network_ranges.append(network_range)
+                
+            except Exception as e:
+                logger.error(f"Error processing network {network}: {e}")
+                continue
+        
+        if not device_ips:
+            logger.error("No valid networks to scan!")
+            return False, ""
+        
+        ports, processes = extract_ports()
+        logger.info(f"Found {len(ports)} open ports on pivot device")
+        
+        all_info[mac_key] = [interfaces, device_ips, macs, masks, network_ranges, ports, processes, hostname]
+        
+        logger.info("=== DEVICE EXTRACTION SUMMARY ===")
+        logger.info(f"Device: {hostname}")
+        logger.info(f"Networks to scan: {device_ips}")
+        logger.info(f"Network ranges: {network_ranges}")
+        logger.info(f"Total networks: {len(device_ips)}")
+        
+        return True, mac_key
+    else:
+        logger.info("Device already processed")
+        return False, ""
 
 def attempt_ssh_connection(target_ip, username, password):
     """Test if SSH connection is possible to a target"""
