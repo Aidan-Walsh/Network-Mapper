@@ -11,6 +11,9 @@ An advanced network mapping tool that automatically discovers and maps private n
 - **Network Topology Visualization**: Generates visual network maps showing device relationships
 - **Comprehensive Port Scanning**: Discovers open ports and running services
 - **Credential-based Pivoting**: Automatically attempts SSH connections using provided credentials
+- **Cycle Detection and Deduplication**: Prevents infinite loops and duplicate scanning
+- **Cross-Network Device Identification**: Detects devices accessible from multiple networks
+- **Shortest Path SSH Tunneling**: Avoids redundant tunnels through cycle detection
 - **Progress Logging**: Detailed logging of all operations and discoveries
 - **Multiple Output Formats**: JSON data export and detailed text reports
 
@@ -112,6 +115,8 @@ The tool automatically detects headless environments and provides full functiona
 - **Green Diamond**: Network Segment  
 - **Teal Circle**: SSH Accessible Device
 - **Blue Circle**: Discovered Device (no SSH access)
+- **Yellow Triangle**: Multi-Network Device (potential cycle)
+- **Red Dashed Line**: Cross-Network Connection (cycle detected)
 
 ## Troubleshooting
 
@@ -125,9 +130,19 @@ The tool automatically detects headless environments and provides full functiona
 The tool operates in phases:
 1. **Local Enumeration**: Discover pivot device network configuration
 2. **Network Discovery**: Ping sweep and initial port scanning from pivot
-3. **Credential Testing**: Attempt SSH access to discovered devices
-4. **Tunnel Creation**: Establish SOCKS proxies through SSH
-5. **Deep Scanning**: Scan additional networks through tunnels
-6. **Visualization**: Generate network topology maps
+3. **Cycle Detection**: Check for already-scanned networks and devices
+4. **Credential Testing**: Attempt SSH access to discovered devices
+5. **Path Analysis**: Determine shortest SSH paths to avoid redundant tunnels
+6. **Tunnel Creation**: Establish SOCKS proxies through optimal SSH paths
+7. **Deep Scanning**: Scan additional networks through tunnels with deduplication
+8. **Topology Analysis**: Identify cross-network connections and potential cycles
+9. **Visualization**: Generate network topology maps showing cycles and connections
 
-SSH tunnels use dynamic port forwarding (SOCKS5) starting from port 8000. Proxychains configurations are dynamically generated for each tunnel. 
+**Cycle Detection Features:**
+- **Network Deduplication**: Prevents re-scanning the same network ranges
+- **Device Deduplication**: Tracks discovered devices globally to avoid duplicates  
+- **Path Optimization**: Uses shortest paths for SSH tunneling
+- **Cross-Network Detection**: Identifies devices accessible from multiple networks
+- **Infinite Loop Prevention**: Stops cycles in SSH tunnel chains
+
+SSH tunnels use dynamic port forwarding (SOCKS5) starting from port 8000. Proxychains configurations are dynamically generated for each tunnel. The tool maintains a global topology map tracking all device relationships and network overlaps. 
