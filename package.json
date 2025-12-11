@@ -1,0 +1,16 @@
+{
+  "name": "network-mapper",
+  "version": "1.0.0", 
+  "description": "Automated network discovery and mapping tool with SSH tunneling",
+  "dependencies": {
+    "claude-code": "^1.0.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "install-deps": "pip3 install networkx matplotlib numpy",
+    "run": "python3 mapper.py"
+  },
+  "keywords": ["network", "security", "mapping", "ssh", "tunneling"],
+  "author": "Network Security Team",
+  "license": "MIT"
+}
