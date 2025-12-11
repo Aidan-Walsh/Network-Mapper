@@ -124,6 +124,19 @@ The tool automatically detects headless environments and provides full functiona
 2. **Dependencies Missing**: Run `./setup.sh` to install requirements
 3. **SSH Timeout**: Check credentials and network connectivity
 4. **Visualization Issues**: Install Python graphics dependencies: `pip3 install networkx matplotlib numpy`
+5. **Port Conflicts**: 
+   - Tool automatically finds available ports, but if all ports are busy:
+   - Check for other proxy tools (Tor, Burp Suite, etc.) using common SOCKS ports
+   - Kill existing SSH tunnels: `pkill -f 'ssh.*-D'`
+   - Free up ports 8000-8009, 9050-9054, or 1080-1084
+6. **Proxychains Issues**:
+   - Ensure proxychains4 is installed: `apt install proxychains4` or `brew install proxychains-ng`
+   - Check if SOCKS proxy is responding: Tool includes automatic health checks
+   - Try manual test: `proxychains4 curl http://www.google.com`
+7. **Tunnel Creation Failures**:
+   - Check SSH key conflicts: Tool uses password authentication
+   - Verify target SSH service is running: `nmap -p 22 target_ip`
+   - Check firewall rules allowing outbound SSH connections
 
 ## Technical Details
 
@@ -145,4 +158,12 @@ The tool operates in phases:
 - **Cross-Network Detection**: Identifies devices accessible from multiple networks
 - **Infinite Loop Prevention**: Stops cycles in SSH tunnel chains
 
-SSH tunnels use dynamic port forwarding (SOCKS5) starting from port 8000. Proxychains configurations are dynamically generated for each tunnel. The tool maintains a global topology map tracking all device relationships and network overlaps. 
+**SSH Tunnel Port Management:**
+- **Dynamic Port Selection**: Automatically finds available ports from a curated list
+- **Port Fallback Chain**: Tries common SOCKS ports (8000-8009, 9050-9054, 1080-1084, etc.)
+- **Port Conflict Resolution**: Detects and avoids already-used ports
+- **Tunnel Health Checking**: Tests SOCKS proxy functionality before use
+- **Automatic Retry**: Attempts multiple ports if initial tunnel creation fails
+- **Graceful Cleanup**: Properly terminates tunnels and frees ports on exit
+
+SSH tunnels use dynamic port forwarding (SOCKS5) with intelligent port selection. Proxychains configurations are dynamically generated for each tunnel with optimized timeouts and local network bypass rules. The tool maintains a global topology map tracking all device relationships and network overlaps. 

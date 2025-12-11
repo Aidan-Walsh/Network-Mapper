@@ -6,6 +6,7 @@ import logging
 import time
 import socket
 import threading
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -20,6 +21,18 @@ logger = logging.getLogger(__name__)
 # Global variables for SSH tunneling and cycle detection
 ssh_tunnels = {}  # Track active SSH tunnels: {ip: port}
 tunnel_counter = 8000  # Starting port for SOCKS proxies
+used_ports = set()  # Track used local ports to avoid conflicts
+
+# Common SOCKS proxy ports for fallback
+SOCKS_PORT_CANDIDATES = [
+    8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 8008, 8009,  # Starting range
+    9050, 9051, 9052, 9053, 9054,  # Tor default ports
+    1080, 1081, 1082, 1083, 1084,  # Standard SOCKS ports
+    8080, 8081, 8082, 8888,        # HTTP proxy ports (can work for SOCKS)
+    3128, 3129, 3130,              # Squid proxy ports
+    1337, 1338, 1339,              # Alternative ports
+    9999, 9998, 9997               # High number fallbacks
+]
 discovered_devices = set()  # Track all discovered device IPs to prevent duplicates
 scanned_networks = set()  # Track scanned network ranges to prevent re-scanning
 device_network_map = {}  # Track which networks each device belongs to
@@ -276,37 +289,161 @@ def get_network_identifier(ip, mask):
     else:
         return f"{octets[0]}.0.0.0/{mask}"
 
-def create_ssh_tunnel(target_ip, username, password, local_port):
-    """Create SSH tunnel with SOCKS proxy using sshpass"""
-    global ssh_tunnels
-    
-    command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -D {local_port} -f -N {username}@{target_ip}"
-    
+def is_port_available(port):
+    """Check if a local port is available for binding"""
     try:
-        logger.info(f"Creating SSH tunnel to {target_ip} on port {local_port}")
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            ssh_tunnels[target_ip] = local_port
-            logger.info(f"SSH tunnel established to {target_ip} on port {local_port}")
-            return local_port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('127.0.0.1', port))
+            return True
+    except OSError:
+        return False
+
+def get_available_port():
+    """Get next available port from candidates list"""
+    global used_ports
+    
+    # First try our preferred candidates
+    for port in SOCKS_PORT_CANDIDATES:
+        if port not in used_ports and is_port_available(port):
+            used_ports.add(port)
+            return port
+    
+    # If all candidates are taken, try random high ports
+    for _ in range(50):  # Try up to 50 random ports
+        port = random.randint(10000, 65000)
+        if port not in used_ports and is_port_available(port):
+            used_ports.add(port)
+            return port
+    
+    return None
+
+def test_socks_proxy(port, timeout=10):
+    """Test if SOCKS proxy is working on given port"""
+    try:
+        import socks
+        s = socks.socksocket()
+        s.set_proxy(socks.SOCKS5, "127.0.0.1", port)
+        s.settimeout(timeout)
+        # Try to connect to a known good address
+        s.connect(("8.8.8.8", 53))  # Google DNS
+        s.close()
+        return True
+    except:
+        # Fallback test using curl if socks module not available
+        try:
+            test_cmd = f"timeout {timeout} curl -x socks5://127.0.0.1:{port} -s http://www.google.com --max-time {timeout}"
+            result = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=timeout+2)
+            return result.returncode == 0
+        except:
+            return False
+
+def create_ssh_tunnel(target_ip, username, password, preferred_port=None):
+    """Create SSH tunnel with SOCKS proxy using sshpass with port fallback"""
+    global ssh_tunnels, used_ports
+    
+    # If target already has a working tunnel, return existing port
+    if target_ip in ssh_tunnels:
+        existing_port = ssh_tunnels[target_ip]
+        if test_socks_proxy(existing_port, timeout=5):
+            logger.info(f"Reusing existing SSH tunnel to {target_ip} on port {existing_port}")
+            return existing_port
         else:
-            logger.error(f"Failed to create SSH tunnel to {target_ip}: {result.stderr}")
-            return None
-            
-    except Exception as e:
-        logger.error(f"Error creating SSH tunnel to {target_ip}: {e}")
+            logger.warning(f"Existing tunnel to {target_ip} on port {existing_port} not responding, creating new tunnel")
+            # Remove failed tunnel info
+            del ssh_tunnels[target_ip]
+            if existing_port in used_ports:
+                used_ports.remove(existing_port)
+    
+    # Try to get an available port
+    local_port = preferred_port if preferred_port and is_port_available(preferred_port) else get_available_port()
+    
+    if not local_port:
+        logger.error(f"No available ports for SSH tunnel to {target_ip}")
         return None
+    
+    # First kill any existing SSH tunnels on this port
+    cleanup_port_tunnels(local_port)
+    
+    command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ExitOnForwardFailure=yes -D {local_port} -f -N {username}@{target_ip}"
+    
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            logger.info(f"Creating SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Give tunnel time to establish
+                time.sleep(2)
+                
+                # Test if tunnel is actually working
+                if test_socks_proxy(local_port):
+                    ssh_tunnels[target_ip] = local_port
+                    logger.info(f"SSH tunnel established and tested to {target_ip} on port {local_port}")
+                    return local_port
+                else:
+                    logger.warning(f"SSH tunnel created but SOCKS proxy not responding on port {local_port}")
+                    cleanup_port_tunnels(local_port)
+            else:
+                logger.warning(f"SSH tunnel creation failed on port {local_port}: {result.stderr}")
+                cleanup_port_tunnels(local_port)
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"SSH tunnel creation timed out for {target_ip} on port {local_port}")
+            cleanup_port_tunnels(local_port)
+        except Exception as e:
+            logger.warning(f"Error creating SSH tunnel to {target_ip} on port {local_port}: {e}")
+            cleanup_port_tunnels(local_port)
+        
+        # If this attempt failed, try a different port for next attempt
+        if attempt < max_attempts - 1:
+            used_ports.discard(local_port)  # Free up the failed port
+            local_port = get_available_port()
+            if not local_port:
+                break
+    
+    logger.error(f"Failed to create working SSH tunnel to {target_ip} after {max_attempts} attempts")
+    return None
+
+def cleanup_port_tunnels(port):
+    """Kill any existing SSH tunnels using the specified port"""
+    try:
+        # Kill SSH processes using this port
+        subprocess.run(f"pkill -f 'ssh.*-D.*{port}'", shell=True, capture_output=True)
+        time.sleep(1)  # Give time for cleanup
+    except:
+        pass
 
 def scan_through_proxy(target_ip, proxy_port, scan_range=None):
-    """Scan network through SOCKS proxy using proxychains"""
+    """Scan network through SOCKS proxy using proxychains with enhanced error handling"""
     discovered_hosts = []
     
-    # Configure proxychains for this specific proxy
+    # Test if proxy is working before attempting scan
+    if not test_socks_proxy(proxy_port, timeout=5):
+        logger.error(f"SOCKS proxy on port {proxy_port} is not responding, skipping scan")
+        return []
+    
+    # Configure proxychains for this specific proxy with multiple fallback configs
     proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
     
+    # Create robust proxychains configuration
+    proxychains_config = f"""# Proxychains config for port {proxy_port}
+strict_chain
+proxy_dns
+remote_dns_subnet 224
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
+localnet 127.0.0.0/255.0.0.0
+localnet 10.0.0.0/255.0.0.0
+localnet 172.16.0.0/255.240.0.0
+localnet 192.168.0.0/255.255.0.0
+
+[ProxyList]
+socks5 127.0.0.1 {proxy_port}
+"""
+    
     with open(proxychains_conf, 'w') as f:
-        f.write("""strict_chain\nproxy_dns\nremote_dns_subnet 224\ntcp_read_time_out 15000\ntcp_connect_time_out 8000\n[ProxyList]\nsocks5 127.0.0.1 """ + str(proxy_port) + "\n")
+        f.write(proxychains_config)
     
     if scan_range:
         # Ping sweep through proxy
@@ -331,42 +468,66 @@ def scan_through_proxy(target_ip, proxy_port, scan_range=None):
     return discovered_hosts
 
 def scan_host_ports_proxy(target_ip, proxy_port):
-    """Scan specific host ports through SOCKS proxy"""
+    """Scan specific host ports through SOCKS proxy with enhanced reliability"""
     ports_info = []
     
-    proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
-    command = f"proxychains4 -f {proxychains_conf} nmap -Pn -sS --top-ports 1000 {target_ip}"
+    # Test proxy before scanning
+    if not test_socks_proxy(proxy_port, timeout=5):
+        logger.error(f"SOCKS proxy on port {proxy_port} is not responding, cannot scan {target_ip}")
+        return [], None
     
-    try:
-        logger.info(f"Port scanning {target_ip} through proxy")
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=180)
-        
-        # Parse nmap output more robustly
-        lines = result.stdout.split('\n')
-        for line in lines:
-            if '/tcp' in line and 'open' in line:
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    port_proto = parts[0]
-                    state = parts[1]
-                    service = parts[2] if len(parts) > 2 else 'unknown'
-                    
-                    if state == 'open':
-                        port = port_proto.split('/')[0]
-                        ports_info.append((port, service))
-        
-        # Try to get MAC address if possible
-        mac_match = re.search(r'MAC Address: ([0-9A-F:]{17})', result.stdout)
-        mac_addr = mac_match.group(1) if mac_match else None
-        
-        return ports_info, mac_addr
-        
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Port scan timed out for {target_ip}")
-        return [], None
-    except Exception as e:
-        logger.error(f"Error port scanning {target_ip}: {e}")
-        return [], None
+    proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
+    
+    # Try multiple scanning approaches for better reliability
+    scan_commands = [
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sS --top-ports 1000 {target_ip}",
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 500 {target_ip}",  # TCP connect scan fallback
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sS --top-ports 100 {target_ip}"   # Smaller port range fallback
+    ]
+    
+    # Try each scan command until one succeeds
+    for i, command in enumerate(scan_commands):
+        try:
+            scan_type = ["SYN scan", "TCP connect scan", "limited port scan"][i]
+            logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
+            
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=180)
+            
+            if result.returncode == 0 and result.stdout:
+                # Parse nmap output more robustly
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if '/tcp' in line and 'open' in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            port_proto = parts[0]
+                            state = parts[1]
+                            service = parts[2] if len(parts) > 2 else 'unknown'
+                            
+                            if state == 'open':
+                                port = port_proto.split('/')[0]
+                                ports_info.append((port, service))
+                
+                # Try to get MAC address if possible
+                mac_match = re.search(r'MAC Address: ([0-9A-F:]{17})', result.stdout)
+                mac_addr = mac_match.group(1) if mac_match else None
+                
+                if ports_info or i == len(scan_commands) - 1:  # Return results if found or last attempt
+                    logger.info(f"Successfully scanned {target_ip} through proxy, found {len(ports_info)} open ports")
+                    return ports_info, mac_addr
+            else:
+                logger.warning(f"Scan attempt {i+1} failed for {target_ip}: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Port scan timed out for {target_ip} (attempt {i+1})")
+            if i == len(scan_commands) - 1:
+                return [], None
+        except Exception as e:
+            logger.warning(f"Error port scanning {target_ip} (attempt {i+1}): {e}")
+            if i == len(scan_commands) - 1:
+                return [], None
+    
+    return [], None
 
 def scan_host_directly(target_ip):
     """Scan host directly from pivot device"""
@@ -489,11 +650,8 @@ def scan_network(joined_macs):
                     if attempt_ssh_connection(discovered_ip, username, password):
                         logger.info(f"SSH access successful to {discovered_ip} with {username}")
                         
-                        # Create SSH tunnel
-                        tunnel_port = tunnel_counter
-                        tunnel_counter += 1
-                        
-                        active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password, tunnel_port)
+                        # Create SSH tunnel with automatic port selection
+                        active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
                         
                         if active_tunnel_port:
                             ssh_success = True
@@ -1059,9 +1217,19 @@ wait
 
 def cleanup_ssh_tunnels():
     """Clean up SSH tunnels and temporary files"""
+    global ssh_tunnels, used_ports
+    
     logger.info("Cleaning up SSH tunnels...")
     
-    # Kill SSH tunnel processes
+    # Kill SSH tunnel processes for known ports
+    for target_ip, port in ssh_tunnels.items():
+        try:
+            logger.info(f"Cleaning up tunnel to {target_ip} on port {port}")
+            subprocess.run(f"pkill -f 'ssh.*-D.*{port}.*{target_ip}'", shell=True, capture_output=True)
+        except:
+            pass
+    
+    # Kill any remaining SSH tunnel processes
     try:
         subprocess.run("pkill -f 'ssh.*-D.*-f.*-N'", shell=True, capture_output=True)
     except:
@@ -1070,8 +1238,18 @@ def cleanup_ssh_tunnels():
     # Remove temporary proxychains config files
     try:
         subprocess.run("rm -f /tmp/proxychains_*.conf", shell=True, capture_output=True)
+        logger.info("Removed temporary proxychains configuration files")
     except:
         pass
+    
+    # Clear tracking variables
+    ssh_tunnels.clear()
+    used_ports.clear()
+    
+    # Give time for cleanup
+    time.sleep(2)
+    
+    logger.info("SSH tunnel cleanup complete")
 
 def save_results_to_json(results, filename="network_scan_results.json"):
     """Save scan results to JSON file"""
