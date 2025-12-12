@@ -7,7 +7,7 @@
   },
   "devDependencies": {},
   "scripts": {
-    "install-deps": "pip3 install networkx matplotlib numpy",
+    "install-deps": "pip3 install -r requirements.txt",
     "run": "python3 mapper.py"
   },
   "keywords": ["network", "security", "mapping", "ssh", "tunneling"],

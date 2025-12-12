@@ -47,8 +47,8 @@ def extract_networks():
     command = ["ip", "a"]
 
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) 
-        output = result.stdout.decode('utf-8')
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) 
+        output = result.stdout
         
         interfaces = []
         networks = []
@@ -167,9 +167,9 @@ def extract_private(networks, interfaces, macs):
 def get_hostname():
   command = ["hostname"]
   try:
-      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+      result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) 
       # extract interfaces and IPs
-      output = result.stdout.decode('utf-8')
+      output = result.stdout
       name = output.split(".")[0]
       return name
   except Exception as e:
@@ -225,10 +225,10 @@ def get_network_range(ip, mask):
 def extract_ports():
   command = ["ss", "-ntlp"] # ss -ntlp | awk -F ' ' '{print $4,$6}'
   try:
-      result = subprocess.run(command, stdout=subprocess.PIPE, stderr = subprocess.PIPE) 
+      result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) 
       # ports and processes associated to those ports
       
-      output = result.stdout.decode('utf-8')
+      output = result.stdout
       lines_of_interest = output.split("\n")[1:]
       ports_info = []
       process_info = []
@@ -338,7 +338,7 @@ def attempt_ssh_connection(target_ip, username, password):
     test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
     
     try:
-        result = subprocess.run(test_command, shell=True, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
         return result.returncode == 0
     except:
         return False
@@ -470,7 +470,7 @@ def test_socks_proxy(port, timeout=10):
         # Fallback test using curl if socks module not available
         try:
             test_cmd = f"timeout {timeout} curl -x socks5://127.0.0.1:{port} -s http://www.google.com --max-time {timeout}"
-            result = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=timeout+2)
+            result = subprocess.run(test_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout+2)
             return result.returncode == 0
         except:
             return False
@@ -508,7 +508,7 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None):
     for attempt in range(max_attempts):
         try:
             logger.info(f"Creating SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
             
             if result.returncode == 0:
                 # Give tunnel time to establish
@@ -547,7 +547,7 @@ def cleanup_port_tunnels(port):
     """Kill any existing SSH tunnels using the specified port"""
     try:
         # Kill SSH processes using this port
-        subprocess.run(f"pkill -f 'ssh.*-D.*{port}'", shell=True, capture_output=True)
+        subprocess.run(f"pkill -f 'ssh.*-D.*{port}'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(1)  # Give time for cleanup
     except:
         pass
@@ -592,7 +592,7 @@ socks5 127.0.0.1 {proxy_port}
         
         try:
             logger.info(f"Scanning network {network_base}.{start_range}-{end_range} through proxy")
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
             
             # Parse nmap output for discovered hosts
             found_ips = re.findall(r'Nmap scan report for ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', result.stdout)
@@ -629,7 +629,7 @@ def scan_host_ports_proxy(target_ip, proxy_port):
             scan_type = ["SYN scan", "TCP connect scan", "limited port scan"][i]
             logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
             
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=180)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
             
             if result.returncode == 0 and result.stdout:
                 # Parse nmap output more robustly
@@ -674,7 +674,7 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
     # Method 1: ARP table scan (fastest for local network)
     logger.info(f"Scanning network {network_base}.{start_range}-{end_range} using ARP table")
     try:
-        arp_result = subprocess.run("arp -a", shell=True, capture_output=True, text=True, timeout=10)
+        arp_result = subprocess.run("arp -a", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
         arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', arp_result.stdout)
         
         for ip in arp_ips:
@@ -713,7 +713,7 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
             scan_type = ["ICMP ping", "TCP SYN ping", "TCP ACK ping", "UDP ping"][i]
             logger.info(f"Running {scan_type} sweep...")
             
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=120)
             
             if result.returncode == 0:
                 # Extract IPs from nmap output
@@ -737,7 +737,7 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
         logger.info("Few devices found via ping, trying TCP connect scan...")
         try:
             tcp_command = f"nmap -sT -Pn --top-ports=10 --max-retries=1 --host-timeout=5s {network_base}.{start_range}-{end_range}"
-            result = subprocess.run(tcp_command, shell=True, capture_output=True, text=True, timeout=180)
+            result = subprocess.run(tcp_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
             
             # Parse TCP scan results
             current_ip = None
@@ -775,7 +775,7 @@ def scan_host_directly(target_ip):
             logger.info(f"Port scanning {target_ip} using {scan_type}")
             
             timeout = [90, 120, 180][i]  # UDP scans need more time
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
             
             if result.returncode == 0:
                 lines = result.stdout.split('\n')
@@ -1486,19 +1486,19 @@ def cleanup_ssh_tunnels():
     for target_ip, port in ssh_tunnels.items():
         try:
             logger.info(f"Cleaning up tunnel to {target_ip} on port {port}")
-            subprocess.run(f"pkill -f 'ssh.*-D.*{port}.*{target_ip}'", shell=True, capture_output=True)
+            subprocess.run(f"pkill -f 'ssh.*-D.*{port}.*{target_ip}'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except:
             pass
     
     # Kill any remaining SSH tunnel processes
     try:
-        subprocess.run("pkill -f 'ssh.*-D.*-f.*-N'", shell=True, capture_output=True)
+        subprocess.run("pkill -f 'ssh.*-D.*-f.*-N'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except:
         pass
     
     # Remove temporary proxychains config files
     try:
-        subprocess.run("rm -f /tmp/proxychains_*.conf", shell=True, capture_output=True)
+        subprocess.run("rm -f /tmp/proxychains_*.conf", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         logger.info("Removed temporary proxychains configuration files")
     except:
         pass

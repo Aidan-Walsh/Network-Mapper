@@ -11,7 +11,7 @@ def test_arp_discovery():
     """Test ARP table scanning"""
     print("=== ARP Table Discovery Test ===")
     try:
-        result = subprocess.run("arp -a", shell=True, capture_output=True, text=True, timeout=10)
+        result = subprocess.run("arp -a", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
         arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', result.stdout)
         
         print(f"Found {len(arp_ips)} devices in ARP table:")
@@ -39,7 +39,7 @@ def test_nmap_discovery(network="192.168.1.0/24"):
         print(f"\nTesting {scan_type}...")
         
         try:
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
             ips = re.findall(r'Nmap scan report for ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', result.stdout)
             
             print(f"  Found {len(ips)} devices via {scan_type}")
@@ -69,7 +69,7 @@ def test_port_discovery(target_ip):
         print(f"\nTesting {scan_type}...")
         
         try:
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
             
             for line in result.stdout.split('\n'):
                 if '/tcp' in line and 'open' in line:

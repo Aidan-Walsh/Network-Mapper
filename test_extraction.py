@@ -16,8 +16,8 @@ def extract_networks():
     command = ["ip", "a"]
 
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) 
-        output = result.stdout.decode('utf-8')
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) 
+        output = result.stdout
         
         interfaces = []
         networks = []
@@ -162,7 +162,7 @@ def test_discovery_for_10_5_0():
     for cmd in commands:
         print(f"\nTesting: {cmd}")
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
             print(f"Return code: {result.returncode}")
             if result.stdout:
                 print(f"STDOUT:\n{result.stdout}")

@@ -13,8 +13,8 @@ def debug_ip_a():
     
     command = ["ip", "a"]
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output = "\n" + result.stdout.decode('utf-8')
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        output = "\n" + result.stdout
         print("Raw 'ip a' output:")
         print(output)
         print("-" * 50)
@@ -133,7 +133,7 @@ def debug_discovery_commands():
     # ARP scan
     print("\n1. ARP scan:")
     try:
-        result = subprocess.run("arp -a", shell=True, capture_output=True, text=True, timeout=10)
+        result = subprocess.run("arp -a", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
         arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', result.stdout)
         print(f"   Raw ARP output:\n{result.stdout}")
         print(f"   Found IPs: {arp_ips}")

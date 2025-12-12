@@ -1,4 +1,5 @@
-networkx>=2.6
-matplotlib>=3.5.0
-numpy>=1.21.0
+# Python 3.6+ compatible versions
+networkx>=2.5,<3.0  # 2.5 supports Python 3.6+
+matplotlib>=3.0.0,<3.4.0  # 3.3 is last to support Python 3.6
+numpy>=1.19.0,<1.20.0  # 1.19 is last to support Python 3.6  
 PySocks>=1.7.1
