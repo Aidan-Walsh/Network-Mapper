@@ -502,33 +502,66 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None):
     # First kill any existing SSH tunnels on this port
     cleanup_port_tunnels(local_port)
     
-    command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ExitOnForwardFailure=yes -D {local_port} -f -N {username}@{target_ip}"
-    
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
             logger.info(f"Creating SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
-            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
             
-            if result.returncode == 0:
-                # Give tunnel time to establish
-                time.sleep(2)
-                
-                # Test if tunnel is actually working
-                if test_socks_proxy(local_port):
-                    ssh_tunnels[target_ip] = local_port
-                    logger.info(f"SSH tunnel established and tested to {target_ip} on port {local_port}")
-                    return local_port
-                else:
-                    logger.warning(f"SSH tunnel created but SOCKS proxy not responding on port {local_port}")
-                    cleanup_port_tunnels(local_port)
+            # Create SSH tunnel command without -f flag to avoid hanging
+            # Use Popen for better process control
+            command = [
+                'sshpass', '-p', password,
+                'ssh', 
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-o', 'ExitOnForwardFailure=yes',
+                '-o', 'ConnectTimeout=10',
+                '-o', 'ServerAliveInterval=30',
+                '-D', str(local_port),
+                '-N',  # No remote command, removed -f flag
+                f'{username}@{target_ip}'
+            ]
+            
+            logger.debug(f"SSH command: {' '.join(command)}")
+            
+            # Start SSH process in background
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+            
+            # Give tunnel time to establish (reduced from 2 to avoid hanging)
+            time.sleep(3)
+            
+            # Check if process is still running
+            poll_result = process.poll()
+            if poll_result is not None:
+                # Process exited, get error output
+                stdout, stderr = process.communicate()
+                logger.warning(f"SSH process exited with code {poll_result}: {stderr}")
+                cleanup_port_tunnels(local_port)
+                continue
+            
+            # Test if tunnel is actually working
+            if test_socks_proxy(local_port, timeout=8):
+                ssh_tunnels[target_ip] = local_port
+                logger.info(f"SSH tunnel established and tested to {target_ip} on port {local_port}")
+                return local_port
             else:
-                logger.warning(f"SSH tunnel creation failed on port {local_port}: {result.stderr}")
+                logger.warning(f"SSH tunnel process running but SOCKS proxy not responding on port {local_port}")
+                # Kill the process since proxy isn't working
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except:
+                    try:
+                        process.kill()
+                    except:
+                        pass
                 cleanup_port_tunnels(local_port)
                 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"SSH tunnel creation timed out for {target_ip} on port {local_port}")
-            cleanup_port_tunnels(local_port)
         except Exception as e:
             logger.warning(f"Error creating SSH tunnel to {target_ip} on port {local_port}: {e}")
             cleanup_port_tunnels(local_port)
