@@ -7,6 +7,7 @@ import time
 import socket
 import threading
 import random
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -17,6 +18,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Global variables for command line options
+UDP_SCAN = False  # Default: no UDP scanning (slow)
+ARP_SCAN = False  # Default: no ARP table checking
 
 # Global variables for SSH tunneling and cycle detection
 ssh_tunnels = {}  # Track active SSH tunnels: {ip: port}
@@ -703,23 +708,26 @@ def scan_host_ports_proxy(target_ip, proxy_port):
 def discover_network_devices(network_base, start_range, end_range, pivot_ip):
     """Enhanced network discovery using multiple methods"""
     discovered_ips = []
-    
-    # Method 1: ARP table scan (fastest for local network)
-    logger.info(f"Scanning network {network_base}.{start_range}-{end_range} using ARP table")
-    try:
-        arp_result = subprocess.run("arp -a", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
-        arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', arp_result.stdout)
-        
-        for ip in arp_ips:
-            octets = ip.split('.')
-            if (octets[0] + '.' + octets[1] + '.' + octets[2]) == network_base:
-                last_octet = int(octets[3])
-                if start_range <= last_octet <= end_range and ip != pivot_ip:
-                    discovered_ips.append(ip)
-                    logger.info(f"Found device via ARP: {ip}")
-        
-    except Exception as e:
-        logger.warning(f"ARP scan failed: {e}")
+
+    # Method 1: ARP table scan (fastest for local network) - only if ARP_SCAN is enabled
+    if ARP_SCAN:
+        logger.info(f"Scanning network {network_base}.{start_range}-{end_range} using ARP table")
+        try:
+            arp_result = subprocess.run("arp -a", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            arp_ips = re.findall(r'\(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\)', arp_result.stdout)
+
+            for ip in arp_ips:
+                octets = ip.split('.')
+                if (octets[0] + '.' + octets[1] + '.' + octets[2]) == network_base:
+                    last_octet = int(octets[3])
+                    if start_range <= last_octet <= end_range and ip != pivot_ip:
+                        discovered_ips.append(ip)
+                        logger.info(f"Found device via ARP: {ip}")
+
+        except Exception as e:
+            logger.warning(f"ARP scan failed: {e}")
+    else:
+        logger.debug(f"ARP scanning disabled (use -arp to enable)")
     
     # Method 2: Enhanced nmap ping sweep
     network_cidr = f"{network_base}.{start_range}"
@@ -738,13 +746,23 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
         f"nmap -sn -PE -PP -PM --max-retries=2 --min-parallelism=100 {network_cidr}",  # ICMP ping sweep
         f"nmap -sn -PS22,80,443 --max-retries=2 {network_cidr}",  # TCP SYN ping to common ports
         f"nmap -sn -PA80,443 --max-retries=2 {network_cidr}",     # TCP ACK ping
-        f"nmap -sn -PU53,67,68,161 --max-retries=1 {network_cidr}"  # UDP ping to common ports
     ]
+
+    # Add UDP ping only if UDP_SCAN is enabled (it's time-consuming)
+    if UDP_SCAN:
+        discovery_commands.append(f"nmap -sn -PU53,67,68,161 --max-retries=1 {network_cidr}")  # UDP ping to common ports
+
+    scan_types = ["ICMP ping", "TCP SYN ping", "TCP ACK ping"]
+    if UDP_SCAN:
+        scan_types.append("UDP ping")
     
     for i, command in enumerate(discovery_commands):
         try:
-            scan_type = ["ICMP ping", "TCP SYN ping", "TCP ACK ping", "UDP ping"][i]
-            logger.info(f"Running {scan_type} sweep...")
+            scan_type = scan_types[i]
+            if scan_type == "UDP ping":
+                logger.info(f"Running {scan_type} sweep (UDP scan enabled)...")
+            else:
+                logger.info(f"Running {scan_type} sweep...")
             
             result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=120)
             
@@ -794,20 +812,27 @@ def scan_host_directly(target_ip):
     """Enhanced host scanning from pivot device"""
     ports_processes = []
     found_mac = None
-    
-    # Try multiple scan techniques for better results
+
+    # Build scan commands list based on flags
     scan_commands = [
         f"nmap -Pn -sS --top-ports 1000 {target_ip}",     # SYN scan (fastest, most ports)
         f"nmap -Pn -sT --top-ports 500 {target_ip}",      # Connect scan (more reliable)
-        f"nmap -Pn -sU --top-ports 100 {target_ip}",      # UDP scan (for UDP services)
     ]
-    
+    scan_types = ["SYN scan", "TCP connect scan"]
+    timeouts = [90, 120]
+
+    # Add UDP scan only if UDP_SCAN is enabled
+    if UDP_SCAN:
+        scan_commands.append(f"nmap -Pn -sU --top-ports 100 {target_ip}")  # UDP scan (for UDP services)
+        scan_types.append("UDP scan")
+        timeouts.append(180)  # UDP scans need more time
+
     for i, command in enumerate(scan_commands):
         try:
-            scan_type = ["SYN scan", "TCP connect scan", "UDP scan"][i]
+            scan_type = scan_types[i]
             logger.info(f"Port scanning {target_ip} using {scan_type}")
-            
-            timeout = [90, 120, 180][i]  # UDP scans need more time
+
+            timeout = timeouts[i]
             result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
             
             if result.returncode == 0:
@@ -1554,9 +1579,59 @@ def save_results_to_json(results, filename="network_scan_results.json"):
     except Exception as e:
         logger.error(f"Error saving results: {e}")
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Automated Network Discovery and SSH Tunneling Tool',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                    # Standard scan (no UDP, no ARP)
+  %(prog)s -udp               # Include UDP port scanning (slower)
+  %(prog)s -arp               # Include ARP table checking
+  %(prog)s -udp -arp          # Include both UDP scanning and ARP checking
+
+Notes:
+  -udp: Enables UDP port scanning (slower but more comprehensive)
+  -arp: Enables ARP table checking for device discovery
+        """)
+
+    parser.add_argument(
+        '-udp',
+        action='store_true',
+        help='Include UDP port scanning (slower but more thorough)'
+    )
+
+    parser.add_argument(
+        '-arp',
+        action='store_true',
+        help='Include ARP table checking for device discovery'
+    )
+
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='Network Mapper v2.0'
+    )
+
+    return parser.parse_args()
+
 # Main execution
 if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_arguments()
+
+    # Set global flags from command line arguments (declared at module level)
+    UDP_SCAN = args.udp
+    ARP_SCAN = args.arp
+
     logger.info("Starting network mapping from pivot device")
+    logger.info(f"Scan options: UDP={'enabled' if UDP_SCAN else 'disabled'}, ARP={'enabled' if ARP_SCAN else 'disabled'}")
+
+    if UDP_SCAN:
+        logger.info("⚠️  UDP scanning enabled - may take significantly longer")
+    if ARP_SCAN:
+        logger.info("🔍 ARP table checking enabled for device discovery")
     
     try:
         success, joined_macs = extract_device()
