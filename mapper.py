@@ -341,12 +341,213 @@ def extract_device():
 def attempt_ssh_connection(target_ip, username, password):
     """Test if SSH connection is possible to a target"""
     test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
-    
+
     try:
         result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
         return result.returncode == 0
     except:
         return False
+
+def execute_remote_command(target_ip, username, password, command, timeout=30):
+    """Execute a command on a remote device via SSH and return the output"""
+    ssh_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} '{command}'"
+
+    try:
+        result = subprocess.run(ssh_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+        if result.returncode == 0:
+            return True, result.stdout
+        else:
+            logger.warning(f"Remote command failed on {target_ip}: {result.stderr}")
+            return False, result.stderr
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Remote command timed out on {target_ip}")
+        return False, "Command timed out"
+    except Exception as e:
+        logger.error(f"Error executing remote command on {target_ip}: {e}")
+        return False, str(e)
+
+def extract_remote_device_info(target_ip, username, password):
+    """Extract network information from a remote device via SSH"""
+    global all_info
+
+    logger.info(f"=== EXTRACTING REMOTE DEVICE INFO FROM {target_ip} ===")
+
+    # Execute 'ip a' on remote device
+    success, ip_output = execute_remote_command(target_ip, username, password, "ip a", timeout=15)
+    if not success:
+        logger.error(f"Failed to get network info from {target_ip}")
+        return False, ""
+
+    # Execute 'hostname' on remote device
+    success, hostname_output = execute_remote_command(target_ip, username, password, "hostname", timeout=10)
+    if not success:
+        logger.warning(f"Failed to get hostname from {target_ip}")
+        hostname = f"remote_{target_ip.replace('.', '_')}"
+    else:
+        hostname = hostname_output.strip().split(".")[0]
+
+    # Execute 'ss -ntlp' on remote device to get open ports
+    success, ss_output = execute_remote_command(target_ip, username, password, "ss -ntlp", timeout=15)
+    if not success:
+        logger.warning(f"Failed to get port info from {target_ip}")
+        ports = []
+        processes = []
+    else:
+        # Parse ss output (similar to extract_ports logic)
+        ports = []
+        processes = []
+        lines = ss_output.split("\n")[1:]  # Skip header
+        for line in lines:
+            split_info = line.split()
+            filtered_info = [item for item in split_info if item != ""]
+            if len(filtered_info) > 5:
+                port_data = filtered_info[3]
+                process_data = filtered_info[5]
+                ip_port = port_data.split(":")
+                if ip_port[0] == "0.0.0.0" or ip_port[0] == "*":
+                    ports.append(ip_port[-1])
+                    if '"' in process_data:
+                        process_split = process_data.split('"')
+                        processes.append(process_split[1] if len(process_split) > 1 else "unknown")
+                    else:
+                        processes.append("unknown")
+
+    # Parse ip a output (similar to extract_networks logic)
+    interfaces = []
+    networks = []
+    macs = []
+
+    interface_blocks = re.split(r'\n(?=\d+:)', ip_output)
+    for block in interface_blocks:
+        if not block.strip():
+            continue
+
+        lines = block.strip().split('\n')
+        if not lines:
+            continue
+
+        # Extract interface name
+        first_line = lines[0]
+        interface_match = re.match(r'\d+:\s*([^:@]+)', first_line)
+        if not interface_match:
+            continue
+
+        interface_name = interface_match.group(1).strip()
+
+        # Skip loopback and inactive interfaces
+        if interface_name == 'lo' or 'DOWN' in first_line:
+            continue
+
+        # Extract IP addresses and MAC
+        interface_networks = []
+        interface_mac = None
+
+        for line in lines[1:]:
+            # Look for inet addresses
+            inet_match = re.search(r'inet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/\d+)', line)
+            if inet_match:
+                network = inet_match.group(1)
+                interface_networks.append(network)
+                logger.debug(f"Found network {network} on interface {interface_name} (remote: {target_ip})")
+
+            # Look for MAC address
+            mac_match = re.search(r'link/ether\s+([0-9a-f:]{17})', line, re.IGNORECASE)
+            if mac_match and not interface_mac:
+                interface_mac = mac_match.group(1)
+                logger.debug(f"Found MAC {interface_mac} on interface {interface_name} (remote: {target_ip})")
+
+        # Add each network found on this interface
+        for network in interface_networks:
+            interfaces.append(interface_name)
+            networks.append(network)
+            macs.append(interface_mac if interface_mac else "unknown")
+
+    logger.info(f"Extracted {len(networks)} networks from remote device {target_ip}")
+
+    # Filter for private networks
+    returned_networks = []
+    returned_interfaces = []
+    returned_macs = []
+
+    for index in range(len(networks)):
+        network = networks[index]
+        interface = interfaces[index]
+        mac = macs[index]
+
+        try:
+            ip_part = network.split("/")[0]
+            octets = ip_part.split(".")
+
+            if len(octets) >= 2:
+                first_octet = int(octets[0])
+                second_octet = int(octets[1])
+
+                # RFC 1918 private address ranges
+                is_private = (
+                    first_octet == 10 or
+                    (first_octet == 172 and 16 <= second_octet <= 31) or
+                    (first_octet == 192 and second_octet == 168)
+                )
+
+                if is_private:
+                    returned_networks.append(network)
+                    returned_interfaces.append(interface)
+                    returned_macs.append(mac)
+                    logger.info(f"Found private network: {network} on interface {interface} (remote: {target_ip})")
+
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing network {network}: {e}")
+
+    if not returned_networks:
+        logger.warning(f"No private networks found on remote device {target_ip}")
+        return False, ""
+
+    # Process the extracted information
+    mac_key = "".join(returned_macs)
+    if mac_key not in all_info:
+        device_ips = []
+        masks = []
+        network_ranges = []
+
+        for i, network in enumerate(returned_networks):
+            try:
+                information = network.split("/")
+                if len(information) != 2:
+                    logger.error(f"Invalid network format: {network}")
+                    continue
+
+                device_ip = information[0]
+                mask = information[1]
+                network_range = get_network_range(device_ip, mask)
+
+                logger.info(f"  Device IP: {device_ip}")
+                logger.info(f"  Mask: /{mask}")
+                logger.info(f"  Calculated scan range: {network_range[0]}-{network_range[1]}")
+
+                masks.append(mask)
+                device_ips.append(device_ip)
+                network_ranges.append(network_range)
+
+            except Exception as e:
+                logger.error(f"Error processing network {network}: {e}")
+                continue
+
+        if not device_ips:
+            logger.error(f"No valid networks to scan on remote device {target_ip}!")
+            return False, ""
+
+        all_info[mac_key] = [returned_interfaces, device_ips, returned_macs, masks, network_ranges, ports, processes, hostname]
+
+        logger.info(f"=== REMOTE DEVICE EXTRACTION SUMMARY ({target_ip}) ===")
+        logger.info(f"Device: {hostname}")
+        logger.info(f"Networks to scan: {device_ips}")
+        logger.info(f"Network ranges: {network_ranges}")
+        logger.info(f"Total networks: {len(device_ips)}")
+
+        return True, mac_key
+    else:
+        logger.info(f"Remote device {target_ip} already processed")
+        return False, ""
 
 def is_device_already_discovered(ip):
     """Check if device has already been discovered"""
@@ -968,55 +1169,82 @@ def scan_network(joined_macs):
                 for username, password in zip(usernames, passwords):
                     if attempt_ssh_connection(discovered_ip, username, password):
                         logger.info(f"SSH access successful to {discovered_ip} with {username}")
-                        
-                        # Create SSH tunnel with automatic port selection
-                        active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
-                        
-                        if active_tunnel_port:
-                            ssh_success = True
-                            
-                            # Record this access path
-                            ssh_access_paths[discovered_ip] = current_path + [discovered_ip]
-                            
-                            # Scan networks accessible through this tunnel
+                        ssh_success = True
+
+                        # Record this access path
+                        ssh_access_paths[discovered_ip] = current_path + [discovered_ip]
+
+                        # IMPORTANT: SSH into the device and extract its network information
+                        logger.info(f"Extracting network info from remote device {discovered_ip}")
+                        remote_success, remote_mac_key = extract_remote_device_info(discovered_ip, username, password)
+
+                        if remote_success:
+                            logger.info(f"Successfully extracted network info from {discovered_ip}, now scanning its networks")
+
+                            # Recursively scan the networks discovered on this remote device
                             try:
-                                time.sleep(2)  # Give tunnel time to establish
-                                
-                                # Get network range for this device
-                                device_network_range = get_network_range(discovered_ip, mask)
-                                deeper_network_id = get_network_identifier(discovered_ip, mask)
-                                
-                                # Only scan if we haven't scanned this network through this device
-                                if not is_network_already_scanned(f"{deeper_network_id}_via_{discovered_ip}"):
-                                    mark_network_as_scanned(f"{deeper_network_id}_via_{discovered_ip}")
-                                    
-                                    deeper_hosts = scan_through_proxy(discovered_ip, active_tunnel_port, device_network_range)
-                                    
-                                    if deeper_hosts:
-                                        logger.info(f"Found {len(deeper_hosts)} additional hosts through {discovered_ip}")
-                                        
-                                        # Scan ports on newly discovered hosts
-                                        for deep_host in deeper_hosts:
-                                            if not is_device_already_discovered(deep_host):
-                                                deep_ports, deep_mac = scan_host_ports_proxy(deep_host, active_tunnel_port)
-                                                
-                                                # Add to topology
-                                                add_device_to_topology(
-                                                    deep_host, deep_mac, deep_ports, deeper_network_id,
-                                                    f"pivot->{discovered_ip}->{deep_host}",
-                                                    ssh_accessible=any(p[0] == '22' for p in deep_ports)
-                                                )
-                                                
-                                                # Update returned data structure
-                                                if discovered_ip not in returned_dict:
-                                                    returned_dict[discovered_ip] = [[], [], []]
-                                                returned_dict[discovered_ip][0].append(deep_host)
-                                                returned_dict[discovered_ip][1].append(deep_mac)
-                                                returned_dict[discovered_ip][2].append(deep_ports)
-                            
+                                remote_discovered = scan_network(remote_mac_key)
+
+                                # Merge remote discoveries into our returned dict
+                                for remote_source_ip, remote_discoveries in remote_discovered.items():
+                                    if discovered_ip not in returned_dict:
+                                        returned_dict[discovered_ip] = [[], [], []]
+
+                                    # Add all devices discovered from the remote host
+                                    returned_dict[discovered_ip][0].extend(remote_discoveries[0])
+                                    returned_dict[discovered_ip][1].extend(remote_discoveries[1])
+                                    returned_dict[discovered_ip][2].extend(remote_discoveries[2])
+
+                                    logger.info(f"Merged {len(remote_discoveries[0])} devices discovered through {discovered_ip}")
+
                             except Exception as e:
-                                logger.error(f"Error scanning through tunnel to {discovered_ip}: {e}")
-                        
+                                logger.error(f"Error scanning networks from remote device {discovered_ip}: {e}")
+                        else:
+                            logger.warning(f"Could not extract network info from {discovered_ip}, will use tunnel scanning as fallback")
+
+                            # Fallback: Create SSH tunnel and scan through proxy
+                            active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
+
+                            if active_tunnel_port:
+                                # Scan networks accessible through this tunnel
+                                try:
+                                    time.sleep(2)  # Give tunnel time to establish
+
+                                    # Get network range for this device
+                                    device_network_range = get_network_range(discovered_ip, mask)
+                                    deeper_network_id = get_network_identifier(discovered_ip, mask)
+
+                                    # Only scan if we haven't scanned this network through this device
+                                    if not is_network_already_scanned(f"{deeper_network_id}_via_{discovered_ip}"):
+                                        mark_network_as_scanned(f"{deeper_network_id}_via_{discovered_ip}")
+
+                                        deeper_hosts = scan_through_proxy(discovered_ip, active_tunnel_port, device_network_range)
+
+                                        if deeper_hosts:
+                                            logger.info(f"Found {len(deeper_hosts)} additional hosts through {discovered_ip}")
+
+                                            # Scan ports on newly discovered hosts
+                                            for deep_host in deeper_hosts:
+                                                if not is_device_already_discovered(deep_host):
+                                                    deep_ports, deep_mac = scan_host_ports_proxy(deep_host, active_tunnel_port)
+
+                                                    # Add to topology
+                                                    add_device_to_topology(
+                                                        deep_host, deep_mac, deep_ports, deeper_network_id,
+                                                        f"pivot->{discovered_ip}->{deep_host}",
+                                                        ssh_accessible=any(p[0] == '22' for p in deep_ports)
+                                                    )
+
+                                                    # Update returned data structure
+                                                    if discovered_ip not in returned_dict:
+                                                        returned_dict[discovered_ip] = [[], [], []]
+                                                    returned_dict[discovered_ip][0].append(deep_host)
+                                                    returned_dict[discovered_ip][1].append(deep_mac)
+                                                    returned_dict[discovered_ip][2].append(deep_ports)
+
+                                except Exception as e:
+                                    logger.error(f"Error scanning through tunnel to {discovered_ip}: {e}")
+
                         break  # Stop trying credentials once we have access
             
             # Update main returned data structure
