@@ -26,6 +26,7 @@ ARP_SCAN = False  # Default: no ARP table checking
 # Global variables for SSH tunneling and cycle detection
 FIXED_SOCKS_PORT = 9050  # FIXED: Only port 9050 works for dynamic forwarding
 ssh_tunnels = {}  # Track active SSH tunnels: {ip: port (always 9050)}
+ssh_processes = {}  # Track SSH tunnel processes to keep them alive: {ip: subprocess.Popen}
 ssh_credentials = {}  # Track SSH credentials for each device: {ip: (username, password)}
 ssh_hop_paths = {}  # Track the hop path to reach each device: {ip: [hop1_ip, hop2_ip, ...]}
 
@@ -752,12 +753,26 @@ def build_proxy_command_chain(target_ip):
 
 def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_path=None):
     """Create SSH tunnel with SOCKS proxy on port 9050 (FIXED PORT) with multi-hop support"""
-    global ssh_tunnels, ssh_credentials, ssh_hop_paths, FIXED_SOCKS_PORT
+    global ssh_tunnels, ssh_processes, ssh_credentials, ssh_hop_paths, FIXED_SOCKS_PORT
 
     # IMPORTANT: Always use port 9050 for dynamic forwarding (only port that works reliably)
     local_port = FIXED_SOCKS_PORT
 
     logger.info(f"Setting up SSH tunnel to {target_ip} on fixed port {local_port}")
+
+    # Kill any existing tunnel to this target
+    if target_ip in ssh_processes:
+        try:
+            logger.info(f"Killing existing tunnel process to {target_ip}")
+            old_process = ssh_processes[target_ip]
+            old_process.terminate()
+            old_process.wait(timeout=3)
+        except:
+            try:
+                old_process.kill()
+            except:
+                pass
+        del ssh_processes[target_ip]
 
     # Force kill any existing process using port 9050
     force_kill_port_9050()
@@ -778,15 +793,18 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
             else:
                 logger.info(f"Creating direct SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
 
-            # Create SSH tunnel command
+            # Create SSH tunnel command with aggressive keepalive
             command = [
                 'sshpass', '-p', password,
                 'ssh',
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 '-o', 'ExitOnForwardFailure=yes',
-                '-o', 'ConnectTimeout=10',
-                '-o', 'ServerAliveInterval=30'
+                '-o', 'ConnectTimeout=15',
+                '-o', 'ServerAliveInterval=10',  # Send keepalive every 10 seconds
+                '-o', 'ServerAliveCountMax=3',   # Allow 3 missed keepalives before disconnect
+                '-o', 'TCPKeepAlive=yes',        # Enable TCP keepalive
+                '-o', 'Compression=yes'          # Enable compression for better performance
             ]
 
             # Add ProxyCommand if multi-hop connection is needed
@@ -810,8 +828,9 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                 universal_newlines=True
             )
 
-            # Give tunnel time to establish
-            time.sleep(3)
+            # Give tunnel more time to establish (critical for reliability)
+            logger.info(f"Waiting for tunnel to establish...")
+            time.sleep(5)
 
             # Check if process is still running
             poll_result = process.poll()
@@ -821,13 +840,26 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                 logger.warning(f"SSH process exited with code {poll_result}: {stderr}")
                 continue
 
-            # Test if tunnel is actually working
-            if test_socks_proxy(local_port, timeout=8):
+            # Test if tunnel is actually working - try multiple times
+            tunnel_working = False
+            for verify_attempt in range(5):  # Try 5 times
+                logger.debug(f"Verifying tunnel (attempt {verify_attempt + 1}/5)...")
+                if test_socks_proxy(local_port, timeout=10):
+                    tunnel_working = True
+                    break
+                else:
+                    logger.debug(f"Tunnel not ready yet, waiting...")
+                    time.sleep(2)
+
+            if tunnel_working:
+                # IMPORTANT: Store process reference to keep it alive
+                ssh_processes[target_ip] = process
                 ssh_tunnels[target_ip] = local_port
-                logger.info(f"✓ SSH tunnel established and tested to {target_ip} on port {local_port}")
+                logger.info(f"✓ SSH tunnel established and verified to {target_ip} on port {local_port}")
+                logger.info(f"✓ Tunnel process PID: {process.pid} - keeping alive for the session")
                 return local_port
             else:
-                logger.warning(f"SSH tunnel process running but SOCKS proxy not responding on port {local_port}")
+                logger.warning(f"SSH tunnel process running but SOCKS proxy not responding after multiple attempts")
                 # Kill the process since proxy isn't working
                 try:
                     process.terminate()
@@ -2003,9 +2035,21 @@ wait
 
 def cleanup_ssh_tunnels():
     """Clean up SSH tunnels (all on port 9050) and temporary files"""
-    global ssh_tunnels, FIXED_SOCKS_PORT
+    global ssh_tunnels, ssh_processes, FIXED_SOCKS_PORT
 
     logger.info("Cleaning up SSH tunnels...")
+
+    # First, kill tracked SSH processes gracefully
+    for target_ip, process in list(ssh_processes.items()):
+        try:
+            logger.info(f"Terminating tunnel process to {target_ip} (PID: {process.pid})")
+            process.terminate()
+            process.wait(timeout=3)
+        except:
+            try:
+                process.kill()
+            except:
+                pass
 
     # Kill all SSH tunnel processes on port 9050
     logger.info(f"Killing all processes using port {FIXED_SOCKS_PORT}")
@@ -2026,6 +2070,7 @@ def cleanup_ssh_tunnels():
     
     # Clear tracking variables
     ssh_tunnels.clear()
+    ssh_processes.clear()
     ssh_credentials.clear()
     ssh_hop_paths.clear()
 
