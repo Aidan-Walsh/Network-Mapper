@@ -1004,7 +1004,7 @@ def scan_host_ports_proxy(target_ip, proxy_port):
             scan_type = ["TCP connect (1000 ports)", "TCP connect (500 ports)", "TCP connect (100 ports)"][i]
             logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
             
-            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             
             if result.returncode == 0 and result.stdout:
                 # Parse nmap output more robustly
