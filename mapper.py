@@ -888,20 +888,31 @@ socks5 127.0.0.1 {proxy_port}
         f.write(proxychains_config)
     
     if scan_range:
-        # Ping sweep through proxy
+        # TCP connect scan through proxy (ping sweeps don't work with proxychains)
+        # Use -sT with common ports to detect live hosts
         network_base = ".".join(target_ip.split(".")[:3])
         start_range, end_range = scan_range
-        
-        command = f"proxychains4 -f {proxychains_conf} nmap -sn {network_base}.{start_range}-{end_range}"
-        
+
+        # Use TCP connect scan on common ports (proxychains requirement)
+        # Check ports 22,80,443,445 to detect most devices
+        command = f"proxychains4 -f {proxychains_conf} nmap -sT -Pn -p 22,80,443,445,3389,8080 --open {network_base}.{start_range}-{end_range}"
+
         try:
-            logger.info(f"Scanning network {network_base}.{start_range}-{end_range} through proxy")
-            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=300)
-            
-            # Parse nmap output for discovered hosts
+            logger.info(f"TCP scanning network {network_base}.{start_range}-{end_range} through proxy (proxychains -sT)")
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=600)
+
+            # Parse nmap output for discovered hosts (any host with at least one open port)
             found_ips = re.findall(r'Nmap scan report for ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', result.stdout)
+
+            # Filter to only include hosts that had open ports
+            for line in result.stdout.split('\n'):
+                if '/tcp' in line and 'open' in line:
+                    # This line has an open port, the host is alive
+                    pass  # IP already captured above
+
             discovered_hosts.extend(found_ips)
-            
+            logger.info(f"Found {len(found_ips)} hosts with open ports through proxy")
+
         except subprocess.TimeoutExpired:
             logger.warning(f"Network scan through proxy timed out for {network_base}")
         except Exception as e:
@@ -920,17 +931,17 @@ def scan_host_ports_proxy(target_ip, proxy_port):
     
     proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
     
-    # Try multiple scanning approaches for better reliability
+    # IMPORTANT: Only -sT (TCP connect) works with proxychains - no -sS, -sU, or ping scans
     scan_commands = [
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sS --top-ports 1000 {target_ip}",
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 500 {target_ip}",  # TCP connect scan fallback
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sS --top-ports 100 {target_ip}"   # Smaller port range fallback
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 1000 {target_ip}",
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 500 {target_ip}",  # Fallback with fewer ports
+        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 100 {target_ip}"   # Smaller port range fallback
     ]
-    
+
     # Try each scan command until one succeeds
     for i, command in enumerate(scan_commands):
         try:
-            scan_type = ["SYN scan", "TCP connect scan", "limited port scan"][i]
+            scan_type = ["TCP connect (1000 ports)", "TCP connect (500 ports)", "TCP connect (100 ports)"][i]
             logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
             
             result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
