@@ -366,6 +366,39 @@ def execute_remote_command(target_ip, username, password, command, timeout=30):
         logger.error(f"Error executing remote command on {target_ip}: {e}")
         return False, str(e)
 
+def ping_sweep_remote(target_ip, username, password, network_base, start_range, end_range):
+    """Run a fast ping sweep directly on the remote device (much faster than proxychains TCP scan)"""
+    logger.info(f"Running ping sweep on {target_ip} for {network_base}.{start_range}-{end_range}")
+
+    # Build a bash command to ping all IPs in parallel
+    # Using background jobs with & and wait for maximum speed
+    ping_command = f"""
+for i in $(seq {start_range} {end_range}); do
+    (ping -c 1 -W 1 {network_base}.$i > /dev/null 2>&1 && echo {network_base}.$i) &
+done
+wait
+"""
+
+    # Execute the ping sweep on the remote device
+    success, output = execute_remote_command(target_ip, username, password, ping_command, timeout=120)
+
+    if not success:
+        logger.warning(f"Ping sweep failed on {target_ip}")
+        return []
+
+    # Parse output to get list of responding IPs
+    discovered_ips = []
+    for line in output.strip().split('\n'):
+        line = line.strip()
+        # Check if it's a valid IP
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', line):
+            if line != target_ip:  # Don't include the device itself
+                discovered_ips.append(line)
+                logger.info(f"Found live host via ping: {line}")
+
+    logger.info(f"Ping sweep on {target_ip} found {len(discovered_ips)} live hosts")
+    return discovered_ips
+
 def extract_remote_device_info(target_ip, username, password):
     """Extract network information from a remote device via SSH"""
     global all_info
@@ -1286,10 +1319,17 @@ def scan_network(joined_macs):
 
                                         mark_network_as_scanned(f"{remote_network_id}_via_{discovered_ip}")
 
-                                        logger.info(f"Scanning network {remote_network_id} through proxy on port {active_tunnel_port}")
+                                        # IMPORTANT: Use ping sweep directly on remote device for host discovery
+                                        # This is MUCH faster than TCP scanning through proxychains
+                                        network_base = ".".join(remote_net_ip.split(".")[:3])
+                                        logger.info(f"Using ping sweep on {discovered_ip} to discover hosts on {network_base}.0/24")
 
-                                        # Scan through the proxy tunnel
-                                        deeper_hosts = scan_through_proxy(remote_net_ip, active_tunnel_port, remote_network_range)
+                                        deeper_hosts = ping_sweep_remote(
+                                            discovered_ip, username, password,
+                                            network_base,
+                                            remote_network_range[0],
+                                            remote_network_range[1]
+                                        )
 
                                         if deeper_hosts:
                                             logger.info(f"Found {len(deeper_hosts)} devices on {remote_network_id} through {discovered_ip}")
@@ -1360,10 +1400,20 @@ def scan_network(joined_macs):
 
                                                                             if not is_network_already_scanned(f"{deep_net_id}_via_{deep_host}"):
                                                                                 mark_network_as_scanned(f"{deep_net_id}_via_{deep_host}")
-                                                                                logger.info(f"Scanning {deep_net_id} through multi-hop tunnel to {deep_host}")
 
-                                                                                # Scan through multi-hop proxy
-                                                                                even_deeper_hosts = scan_through_proxy(deep_net_ip, deep_tunnel_port, deep_net_range)
+                                                                                # Use ping sweep on the multi-hop device for host discovery
+                                                                                deep_network_base = ".".join(deep_net_ip.split(".")[:3])
+                                                                                logger.info(f"Using ping sweep on {deep_host} (multi-hop) to discover hosts on {deep_network_base}.0/24")
+
+                                                                                # Get credentials for deep_host
+                                                                                deep_user, deep_pass = ssh_credentials[deep_host]
+
+                                                                                even_deeper_hosts = ping_sweep_remote(
+                                                                                    deep_host, deep_user, deep_pass,
+                                                                                    deep_network_base,
+                                                                                    deep_net_range[0],
+                                                                                    deep_net_range[1]
+                                                                                )
 
                                                                                 if even_deeper_hosts:
                                                                                     logger.info(f"Found {len(even_deeper_hosts)} devices through multi-hop to {deep_host}")
