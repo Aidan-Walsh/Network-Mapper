@@ -24,22 +24,12 @@ UDP_SCAN = False  # Default: no UDP scanning (slow)
 ARP_SCAN = False  # Default: no ARP table checking
 
 # Global variables for SSH tunneling and cycle detection
-ssh_tunnels = {}  # Track active SSH tunnels: {ip: port}
-tunnel_counter = 8000  # Starting port for SOCKS proxies
-used_ports = set()  # Track used local ports to avoid conflicts
+FIXED_SOCKS_PORT = 9050  # FIXED: Only port 9050 works for dynamic forwarding
+ssh_tunnels = {}  # Track active SSH tunnels: {ip: port (always 9050)}
 ssh_credentials = {}  # Track SSH credentials for each device: {ip: (username, password)}
 ssh_hop_paths = {}  # Track the hop path to reach each device: {ip: [hop1_ip, hop2_ip, ...]}
 
-# Common SOCKS proxy ports for fallback
-SOCKS_PORT_CANDIDATES = [
-    8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 8008, 8009,  # Starting range
-    9050, 9051, 9052, 9053, 9054,  # Tor default ports
-    1080, 1081, 1082, 1083, 1084,  # Standard SOCKS ports
-    8080, 8081, 8082, 8888,        # HTTP proxy ports (can work for SOCKS)
-    3128, 3129, 3130,              # Squid proxy ports
-    1337, 1338, 1339,              # Alternative ports
-    9999, 9998, 9997               # High number fallbacks
-]
+# Note: We no longer need port candidates - always using port 9050
 discovered_devices = set()  # Track all discovered device IPs to prevent duplicates
 scanned_networks = set()  # Track scanned network ranges to prevent re-scanning
 device_network_map = {}  # Track which networks each device belongs to
@@ -728,31 +718,16 @@ def build_proxy_command_chain(target_ip):
     return proxy_commands[-1] if proxy_commands else None
 
 def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_path=None):
-    """Create SSH tunnel with SOCKS proxy using sshpass with multi-hop support"""
-    global ssh_tunnels, used_ports, ssh_credentials, ssh_hop_paths
-    
-    # If target already has a working tunnel, return existing port
-    if target_ip in ssh_tunnels:
-        existing_port = ssh_tunnels[target_ip]
-        if test_socks_proxy(existing_port, timeout=5):
-            logger.info(f"Reusing existing SSH tunnel to {target_ip} on port {existing_port}")
-            return existing_port
-        else:
-            logger.warning(f"Existing tunnel to {target_ip} on port {existing_port} not responding, creating new tunnel")
-            # Remove failed tunnel info
-            del ssh_tunnels[target_ip]
-            if existing_port in used_ports:
-                used_ports.remove(existing_port)
-    
-    # Try to get an available port
-    local_port = preferred_port if preferred_port and is_port_available(preferred_port) else get_available_port()
-    
-    if not local_port:
-        logger.error(f"No available ports for SSH tunnel to {target_ip}")
-        return None
-    
-    # First kill any existing SSH tunnels on this port
-    cleanup_port_tunnels(local_port)
+    """Create SSH tunnel with SOCKS proxy on port 9050 (FIXED PORT) with multi-hop support"""
+    global ssh_tunnels, ssh_credentials, ssh_hop_paths, FIXED_SOCKS_PORT
+
+    # IMPORTANT: Always use port 9050 for dynamic forwarding (only port that works reliably)
+    local_port = FIXED_SOCKS_PORT
+
+    logger.info(f"Setting up SSH tunnel to {target_ip} on fixed port {local_port}")
+
+    # Force kill any existing process using port 9050
+    force_kill_port_9050()
     
     # Store credentials for potential multi-hop use
     ssh_credentials[target_ip] = (username, password)
@@ -770,8 +745,7 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
             else:
                 logger.info(f"Creating direct SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
 
-            # Create SSH tunnel command without -f flag to avoid hanging
-            # Use Popen for better process control
+            # Create SSH tunnel command
             command = [
                 'sshpass', '-p', password,
                 'ssh',
@@ -786,7 +760,7 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
             if proxy_command:
                 command.extend(['-o', f'ProxyCommand={proxy_command}'])
 
-            # Add dynamic port forward and target
+            # Add dynamic port forward and target (ALWAYS port 9050)
             command.extend([
                 '-D', str(local_port),
                 '-N',  # No remote command
@@ -794,7 +768,7 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
             ])
 
             logger.debug(f"SSH command: {' '.join(command)}")
-            
+
             # Start SSH process in background
             process = subprocess.Popen(
                 command,
@@ -802,23 +776,22 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                 stderr=subprocess.PIPE,
                 universal_newlines=True
             )
-            
-            # Give tunnel time to establish (reduced from 2 to avoid hanging)
+
+            # Give tunnel time to establish
             time.sleep(3)
-            
+
             # Check if process is still running
             poll_result = process.poll()
             if poll_result is not None:
                 # Process exited, get error output
                 stdout, stderr = process.communicate()
                 logger.warning(f"SSH process exited with code {poll_result}: {stderr}")
-                cleanup_port_tunnels(local_port)
                 continue
-            
+
             # Test if tunnel is actually working
             if test_socks_proxy(local_port, timeout=8):
                 ssh_tunnels[target_ip] = local_port
-                logger.info(f"SSH tunnel established and tested to {target_ip} on port {local_port}")
+                logger.info(f"✓ SSH tunnel established and tested to {target_ip} on port {local_port}")
                 return local_port
             else:
                 logger.warning(f"SSH tunnel process running but SOCKS proxy not responding on port {local_port}")
@@ -831,19 +804,17 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                         process.kill()
                     except:
                         pass
-                cleanup_port_tunnels(local_port)
-                
+
         except Exception as e:
             logger.warning(f"Error creating SSH tunnel to {target_ip} on port {local_port}: {e}")
-            cleanup_port_tunnels(local_port)
-        
-        # If this attempt failed, try a different port for next attempt
+
+        # Wait before retry
         if attempt < max_attempts - 1:
-            used_ports.discard(local_port)  # Free up the failed port
-            local_port = get_available_port()
-            if not local_port:
-                break
-    
+            logger.info(f"Retrying tunnel creation to {target_ip} in 2 seconds...")
+            time.sleep(2)
+            # Re-kill port 9050 before retry
+            force_kill_port_9050()
+
     logger.error(f"Failed to create working SSH tunnel to {target_ip} after {max_attempts} attempts")
     return None
 
@@ -855,6 +826,30 @@ def cleanup_port_tunnels(port):
         time.sleep(1)  # Give time for cleanup
     except:
         pass
+
+def force_kill_port_9050():
+    """Forcefully kill any process using port 9050 to free it for our dynamic forwarding"""
+    try:
+        logger.info("Clearing port 9050 for dynamic forwarding...")
+
+        # Method 1: Kill by pattern matching SSH with -D 9050
+        subprocess.run("pkill -9 -f 'ssh.*-D.*9050'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # Method 2: Find and kill process listening on port 9050
+        result = subprocess.run("lsof -ti:9050", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        if result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    logger.info(f"Killing process {pid} using port 9050")
+                    subprocess.run(f"kill -9 {pid}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        time.sleep(2)  # Give time for port to be fully released
+        logger.info("Port 9050 cleared and ready")
+
+    except Exception as e:
+        logger.warning(f"Error clearing port 9050: {e}")
+        # Continue anyway, the port might already be free
 
 def scan_through_proxy(target_ip, proxy_port, scan_range=None):
     """Scan network through SOCKS proxy using proxychains with enhanced error handling"""
@@ -1952,22 +1947,18 @@ wait
 # - SSH tunnel paths for deeper network access
 
 def cleanup_ssh_tunnels():
-    """Clean up SSH tunnels and temporary files"""
-    global ssh_tunnels, used_ports
-    
+    """Clean up SSH tunnels (all on port 9050) and temporary files"""
+    global ssh_tunnels, FIXED_SOCKS_PORT
+
     logger.info("Cleaning up SSH tunnels...")
-    
-    # Kill SSH tunnel processes for known ports
-    for target_ip, port in ssh_tunnels.items():
-        try:
-            logger.info(f"Cleaning up tunnel to {target_ip} on port {port}")
-            subprocess.run(f"pkill -f 'ssh.*-D.*{port}.*{target_ip}'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except:
-            pass
-    
+
+    # Kill all SSH tunnel processes on port 9050
+    logger.info(f"Killing all processes using port {FIXED_SOCKS_PORT}")
+    force_kill_port_9050()
+
     # Kill any remaining SSH tunnel processes
     try:
-        subprocess.run("pkill -f 'ssh.*-D.*-f.*-N'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run("pkill -f 'ssh.*-D.*-N'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except:
         pass
     
@@ -1980,11 +1971,12 @@ def cleanup_ssh_tunnels():
     
     # Clear tracking variables
     ssh_tunnels.clear()
-    used_ports.clear()
-    
+    ssh_credentials.clear()
+    ssh_hop_paths.clear()
+
     # Give time for cleanup
     time.sleep(2)
-    
+
     logger.info("SSH tunnel cleanup complete")
 
 def save_results_to_json(results, filename="network_scan_results.json"):
