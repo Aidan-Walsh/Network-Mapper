@@ -367,9 +367,18 @@ def execute_remote_command(target_ip, username, password, command, timeout=30):
         logger.error(f"Error executing remote command on {target_ip}: {e}")
         return False, str(e)
 
-def ping_sweep_remote(target_ip, username, password, network_base, start_range, end_range):
-    """Run a fast ping sweep directly on the remote device (much faster than proxychains TCP scan)"""
+def ping_sweep_remote(target_ip, username, password, network_base, start_range, end_range, exclude_ips=None):
+    """Run a fast ping sweep directly on the remote device (much faster than proxychains TCP scan)
+
+    Args:
+        exclude_ips: List of IPs to exclude (e.g., the device's own IPs to prevent scanning itself)
+    """
+    if exclude_ips is None:
+        exclude_ips = []
+
     logger.info(f"Running ping sweep on {target_ip} for {network_base}.{start_range}-{end_range}")
+    if exclude_ips:
+        logger.info(f"Excluding {len(exclude_ips)} IPs (device's own interfaces): {exclude_ips}")
 
     # Build a bash command to ping all IPs in parallel
     # Using background jobs with & and wait for maximum speed
@@ -393,11 +402,14 @@ wait
         line = line.strip()
         # Check if it's a valid IP
         if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', line):
-            if line != target_ip:  # Don't include the device itself
+            # Exclude: target device and device's own IPs
+            if line != target_ip and line not in exclude_ips:
                 discovered_ips.append(line)
                 logger.info(f"Found live host via ping: {line}")
+            elif line in exclude_ips:
+                logger.debug(f"Skipping {line} (device's own IP)")
 
-    logger.info(f"Ping sweep on {target_ip} found {len(discovered_ips)} live hosts")
+    logger.info(f"Ping sweep on {target_ip} found {len(discovered_ips)} live hosts (excluded {len(exclude_ips)} own IPs)")
     return discovered_ips
 
 def extract_remote_device_info(target_ip, username, password):
@@ -1004,7 +1016,7 @@ def scan_host_ports_proxy(target_ip, proxy_port):
             scan_type = ["TCP connect (1000 ports)", "TCP connect (500 ports)", "TCP connect (100 ports)"][i]
             logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
             
-            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
             
             if result.returncode == 0 and result.stdout:
                 # Parse nmap output more robustly
@@ -1229,6 +1241,132 @@ def scan_host_directly(target_ip):
 # Enhanced scan function with cycle detection and deduplication  
 # scan the internal network for devices, and scan their ports
 # return dictionary of key = value: source ip = [[found_ips],[found_macs], [(ports,service)]]
+def scan_device_and_networks_recursive(device_ip, username, password, hop_path, current_depth=0, max_depth=10):
+    """Recursively scan a device's networks and any SSH-accessible devices found
+
+    Args:
+        device_ip: IP of the device to scan
+        username: SSH username
+        password: SSH password
+        hop_path: List of IPs showing the path to reach this device
+        current_depth: Current recursion depth (for logging)
+        max_depth: Maximum depth to prevent infinite loops
+    """
+    global all_info, usernames, passwords
+
+    if current_depth >= max_depth:
+        logger.warning(f"Reached maximum depth ({max_depth}) at {device_ip}, stopping recursion")
+        return
+
+    logger.info(f"{'  ' * current_depth}[Depth {current_depth}] Scanning device {device_ip}")
+
+    # Store credentials and hop path
+    ssh_credentials[device_ip] = (username, password)
+    ssh_hop_paths[device_ip] = hop_path
+
+    # Extract network info from this device
+    logger.info(f"{'  ' * current_depth}Extracting network info from {device_ip}")
+    remote_success, remote_mac_key = extract_remote_device_info(device_ip, username, password)
+
+    if not remote_success:
+        logger.warning(f"{'  ' * current_depth}Could not extract network info from {device_ip}")
+        return
+
+    logger.info(f"{'  ' * current_depth}Successfully extracted network info from {device_ip}")
+
+    # Create SSH tunnel to this device
+    logger.info(f"{'  ' * current_depth}Creating SSH tunnel to {device_ip}")
+    tunnel_port = create_ssh_tunnel(device_ip, username, password, hop_path=hop_path if len(hop_path) > 1 else None)
+
+    if not tunnel_port:
+        logger.error(f"{'  ' * current_depth}Failed to create SSH tunnel to {device_ip}")
+        return
+
+    logger.info(f"{'  ' * current_depth}SSH tunnel established to {device_ip} on port {tunnel_port}")
+
+    # Get the network information we extracted
+    device_info = all_info[remote_mac_key]
+    device_ips = device_info[1]      # Device's own IPs
+    device_masks = device_info[3]    # Network masks
+    device_ranges = device_info[4]   # Network ranges to scan
+
+    logger.info(f"{'  ' * current_depth}Device has {len(device_ips)} networks to scan")
+
+    # Scan each network discovered on this device
+    time.sleep(2)  # Give tunnel time to establish
+
+    for idx, net_ip in enumerate(device_ips):
+        network_range = device_ranges[idx]
+        network_mask = device_masks[idx]
+        network_id = get_network_identifier(net_ip, network_mask)
+
+        # Skip if already scanned from this device
+        network_scan_key = f"{network_id}_via_mac_{remote_mac_key}"
+        if is_network_already_scanned(network_scan_key):
+            logger.info(f"{'  ' * current_depth}Network {network_id} already scanned from this device")
+            continue
+
+        mark_network_as_scanned(network_scan_key)
+
+        # Run ping sweep to discover hosts
+        network_base = ".".join(net_ip.split(".")[:3])
+        logger.info(f"{'  ' * current_depth}Ping sweep on {network_base}.0/24 from {device_ip}")
+
+        discovered_hosts = ping_sweep_remote(
+            device_ip, username, password,
+            network_base,
+            network_range[0],
+            network_range[1],
+            exclude_ips=device_ips  # Don't scan device's own IPs
+        )
+
+        if not discovered_hosts:
+            logger.info(f"{'  ' * current_depth}No hosts found on {network_id}")
+            continue
+
+        logger.info(f"{'  ' * current_depth}Found {len(discovered_hosts)} hosts on {network_id}")
+
+        # Scan ports on each discovered host
+        for host_ip in discovered_hosts:
+            if is_device_already_discovered(host_ip):
+                logger.debug(f"{'  ' * current_depth}{host_ip} already discovered")
+                continue
+
+            logger.info(f"{'  ' * current_depth}Scanning ports on {host_ip}")
+            host_ports, host_mac = scan_host_ports_proxy(host_ip, tunnel_port)
+
+            # Check if device has SSH
+            has_ssh = any(p[0] == '22' for p in host_ports)
+
+            # Add to topology
+            path_str = '->'.join(hop_path + [host_ip])
+            add_device_to_topology(
+                host_ip, host_mac, host_ports, network_id,
+                path_str,
+                ssh_accessible=has_ssh
+            )
+
+            # RECURSIVE: If device has SSH, scan it too!
+            if has_ssh:
+                logger.info(f"{'  ' * current_depth}Device {host_ip} has SSH - scanning recursively")
+
+                # Try SSH with known credentials
+                for try_user, try_pass in zip(usernames, passwords):
+                    if attempt_ssh_connection(host_ip, try_user, try_pass):
+                        logger.info(f"{'  ' * current_depth}SSH successful to {host_ip}")
+
+                        # RECURSE: Scan this device and its networks
+                        new_hop_path = hop_path + [device_ip]
+                        scan_device_and_networks_recursive(
+                            host_ip, try_user, try_pass,
+                            new_hop_path,
+                            current_depth + 1,
+                            max_depth
+                        )
+                        break  # Stop trying credentials once successful
+            else:
+                logger.debug(f"{'  ' * current_depth}{host_ip} has no SSH, not scanning deeper")
+
 def scan_network(joined_macs):
     """Enhanced network scanning with cycle detection and deduplication"""
     global all_info, tunnel_counter, usernames, passwords, discovered_devices, network_topology
@@ -1313,11 +1451,23 @@ def scan_network(joined_macs):
                         # Record this access path
                         ssh_access_paths[discovered_ip] = current_path + [discovered_ip]
 
-                        # IMPORTANT: SSH into the device and extract its network information
-                        logger.info(f"Extracting network info from remote device {discovered_ip}")
-                        remote_success, remote_mac_key = extract_remote_device_info(discovered_ip, username, password)
+                        # USE RECURSIVE FUNCTION: Scan this device and all its networks (unlimited depth)
+                        logger.info(f"Recursively scanning {discovered_ip} and its networks")
+                        try:
+                            scan_device_and_networks_recursive(
+                                discovered_ip, username, password,
+                                hop_path=current_path,
+                                current_depth=1,
+                                max_depth=20  # Support up to 20 hops!
+                            )
+                        except Exception as e:
+                            logger.error(f"Error during recursive scan of {discovered_ip}: {e}")
 
-                        if remote_success:
+                        # OLD CODE BELOW - Keep for fallback if needed
+                        if False:  # Disabled - using recursive function instead
+                            remote_success, remote_mac_key = extract_remote_device_info(discovered_ip, username, password)
+
+                        if False and remote_success:
                             logger.info(f"Successfully extracted network info from {discovered_ip}")
 
                             # Now create SSH tunnel to scan through this device
@@ -1358,11 +1508,13 @@ def scan_network(joined_macs):
                                         network_base = ".".join(remote_net_ip.split(".")[:3])
                                         logger.info(f"Using ping sweep on {discovered_ip} to discover hosts on {network_base}.0/24")
 
+                                        # CRITICAL: Exclude the device's own IPs to prevent scanning itself!
                                         deeper_hosts = ping_sweep_remote(
                                             discovered_ip, username, password,
                                             network_base,
                                             remote_network_range[0],
-                                            remote_network_range[1]
+                                            remote_network_range[1],
+                                            exclude_ips=remote_ips  # Don't scan the device's own IPs!
                                         )
 
                                         if deeper_hosts:
@@ -1444,11 +1596,13 @@ def scan_network(joined_macs):
                                                                                 # Get credentials for deep_host
                                                                                 deep_user, deep_pass = ssh_credentials[deep_host]
 
+                                                                                # CRITICAL: Exclude the device's own IPs to prevent scanning itself!
                                                                                 even_deeper_hosts = ping_sweep_remote(
                                                                                     deep_host, deep_user, deep_pass,
                                                                                     deep_network_base,
                                                                                     deep_net_range[0],
-                                                                                    deep_net_range[1]
+                                                                                    deep_net_range[1],
+                                                                                    exclude_ips=deep_ips  # Don't scan the device's own IPs!
                                                                                 )
 
                                                                                 if even_deeper_hosts:
