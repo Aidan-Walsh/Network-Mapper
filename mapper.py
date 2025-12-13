@@ -1312,12 +1312,14 @@ def scan_network(joined_macs):
                                         remote_mask = remote_masks[idx]
                                         remote_network_id = get_network_identifier(remote_net_ip, remote_mask)
 
-                                        # Skip if already scanned
-                                        if is_network_already_scanned(f"{remote_network_id}_via_{discovered_ip}"):
-                                            logger.info(f"Network {remote_network_id} already scanned through {discovered_ip}")
+                                        # Skip if already scanned from this device (using MAC for uniqueness)
+                                        # MAC addresses are unique, IPs are not!
+                                        network_scan_key = f"{remote_network_id}_via_mac_{remote_mac_key}"
+                                        if is_network_already_scanned(network_scan_key):
+                                            logger.info(f"Network {remote_network_id} already scanned through device with MAC {remote_mac_key[:17]}")
                                             continue
 
-                                        mark_network_as_scanned(f"{remote_network_id}_via_{discovered_ip}")
+                                        mark_network_as_scanned(network_scan_key)
 
                                         # IMPORTANT: Use ping sweep directly on remote device for host discovery
                                         # This is MUCH faster than TCP scanning through proxychains
@@ -1398,8 +1400,10 @@ def scan_network(joined_macs):
                                                                             deep_net_mask = deep_masks[deep_idx]
                                                                             deep_net_id = get_network_identifier(deep_net_ip, deep_net_mask)
 
-                                                                            if not is_network_already_scanned(f"{deep_net_id}_via_{deep_host}"):
-                                                                                mark_network_as_scanned(f"{deep_net_id}_via_{deep_host}")
+                                                                            # Use MAC for uniqueness in multi-hop scenarios
+                                                                            deep_network_scan_key = f"{deep_net_id}_via_mac_{deep_remote_mac_key}"
+                                                                            if not is_network_already_scanned(deep_network_scan_key):
+                                                                                mark_network_as_scanned(deep_network_scan_key)
 
                                                                                 # Use ping sweep on the multi-hop device for host discovery
                                                                                 deep_network_base = ".".join(deep_net_ip.split(".")[:3])
@@ -1448,9 +1452,10 @@ def scan_network(joined_macs):
                                     device_network_range = get_network_range(discovered_ip, mask)
                                     deeper_network_id = get_network_identifier(discovered_ip, mask)
 
-                                    # Only scan if we haven't scanned this network through this device
-                                    if not is_network_already_scanned(f"{deeper_network_id}_via_{discovered_ip}"):
-                                        mark_network_as_scanned(f"{deeper_network_id}_via_{discovered_ip}")
+                                    # Only scan if we haven't scanned this network through this device (using MAC)
+                                    fallback_network_scan_key = f"{deeper_network_id}_via_mac_{mac_addr}" if mac_addr else f"{deeper_network_id}_via_{discovered_ip}"
+                                    if not is_network_already_scanned(fallback_network_scan_key):
+                                        mark_network_as_scanned(fallback_network_scan_key)
 
                                         deeper_hosts = scan_through_proxy(discovered_ip, active_tunnel_port, device_network_range)
 
