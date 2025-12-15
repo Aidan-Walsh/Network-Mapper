@@ -333,9 +333,29 @@ def extract_device():
         logger.info("Device already processed")
         return False, ""
 
-def attempt_ssh_connection(target_ip, username, password):
-    """Test if SSH connection is possible to a target"""
-    test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
+def attempt_ssh_connection(target_ip, username, password, hop_path=None):
+    """Test if SSH connection is possible to a target (supports multi-hop via ProxyCommand)"""
+    # Build ProxyCommand chain if needed for multi-hop
+    if hop_path:
+        # Temporarily store hop_path for building proxy command
+        global ssh_hop_paths, ssh_credentials
+        original_hop_path = ssh_hop_paths.get(target_ip)
+        ssh_hop_paths[target_ip] = hop_path
+        proxy_command = build_proxy_command_chain(target_ip)
+        # Restore original if it existed, otherwise remove temp entry
+        if original_hop_path is not None:
+            ssh_hop_paths[target_ip] = original_hop_path
+        else:
+            ssh_hop_paths.pop(target_ip, None)
+    else:
+        proxy_command = build_proxy_command_chain(target_ip)
+
+    if proxy_command:
+        logger.debug(f"Testing SSH connection to {target_ip} via multi-hop")
+        test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ProxyCommand='{proxy_command}' {username}@{target_ip} 'echo connected'"
+    else:
+        logger.debug(f"Testing SSH connection to {target_ip} (direct)")
+        test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
 
     try:
         result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
@@ -1390,12 +1410,13 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
                 logger.info(f"{'  ' * current_depth}Device {host_ip} has SSH - scanning recursively")
 
                 # Try SSH with known credentials
+                # The hop_path to reach host_ip is: hop_path + [device_ip]
+                new_hop_path = hop_path + [device_ip]
                 for try_user, try_pass in zip(usernames, passwords):
-                    if attempt_ssh_connection(host_ip, try_user, try_pass):
-                        logger.info(f"{'  ' * current_depth}SSH successful to {host_ip}")
+                    if attempt_ssh_connection(host_ip, try_user, try_pass, hop_path=new_hop_path):
+                        logger.info(f"{'  ' * current_depth}SSH successful to {host_ip} via multi-hop")
 
                         # RECURSE: Scan this device and its networks
-                        new_hop_path = hop_path + [device_ip]
                         scan_device_and_networks_recursive(
                             host_ip, try_user, try_pass,
                             new_hop_path,
@@ -1480,7 +1501,7 @@ def scan_network(joined_macs):
             # Check if we should create tunnel (avoid cycles)
             if should_create_ssh_tunnel(discovered_ip, current_path):
                 for username, password in zip(usernames, passwords):
-                    if attempt_ssh_connection(discovered_ip, username, password):
+                    if attempt_ssh_connection(discovered_ip, username, password, hop_path=current_path):
                         logger.info(f"SSH access successful to {discovered_ip} with {username}")
                         ssh_success = True
 
@@ -1593,7 +1614,7 @@ def scan_network(joined_macs):
 
                                                         # Try to SSH into this deeper device
                                                         for deep_user, deep_pass in zip(usernames, passwords):
-                                                            if attempt_ssh_connection(deep_host, deep_user, deep_pass):
+                                                            if attempt_ssh_connection(deep_host, deep_user, deep_pass, hop_path=deep_hop_path):
                                                                 logger.info(f"Multi-hop SSH successful to {deep_host} via {deep_hop_path}")
 
                                                                 # Store credentials
