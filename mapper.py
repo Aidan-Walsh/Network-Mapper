@@ -278,8 +278,22 @@ def extract_device():
     if not networks:
         logger.error("No private networks found! Check your network configuration.")
         return False, ""
-    
-    mac_key = "".join(macs)
+
+    # IMPORTANT: Sort MACs to create a stable device identifier regardless of discovery order
+    # Filter out "unknown" MACs and sort the rest
+    valid_macs = [mac for mac in macs if mac != "unknown"]
+    if not valid_macs:
+        # If no valid MACs, use hostname as fallback identifier
+        import socket
+        hostname = socket.gethostname()
+        mac_key = f"host_{hostname.replace('.', '_')}"
+        logger.warning(f"No valid MAC addresses found, using hostname-based key: {mac_key}")
+    else:
+        # Sort MACs alphabetically to ensure consistent key regardless of interface order
+        sorted_macs = sorted(valid_macs)
+        mac_key = "_".join(sorted_macs)  # Use underscore separator for readability
+        logger.debug(f"Created stable MAC key from {len(sorted_macs)} MACs: {mac_key[:50]}...")
+
     if mac_key not in all_info:
         hostname = get_hostname()
         logger.info(f"Device hostname: {hostname}")
@@ -571,7 +585,19 @@ def extract_remote_device_info(target_ip, username, password):
         return False, ""
 
     # Process the extracted information
-    mac_key = "".join(returned_macs)
+    # IMPORTANT: Sort MACs to create a stable device identifier regardless of discovery order
+    # Filter out "unknown" MACs and sort the rest
+    valid_macs = [mac for mac in returned_macs if mac != "unknown"]
+    if not valid_macs:
+        # If no valid MACs, use target IP as fallback identifier
+        mac_key = f"ip_{target_ip.replace('.', '_')}"
+        logger.warning(f"No valid MAC addresses found, using IP-based key: {mac_key}")
+    else:
+        # Sort MACs alphabetically to ensure consistent key regardless of interface order
+        sorted_macs = sorted(valid_macs)
+        mac_key = "_".join(sorted_macs)  # Use underscore separator for readability
+        logger.debug(f"Created stable MAC key from {len(sorted_macs)} MACs: {mac_key[:50]}...")
+
     if mac_key not in all_info:
         device_ips = []
         masks = []
