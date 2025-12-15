@@ -8,6 +8,8 @@ import socket
 import threading
 import random
 import argparse
+import os
+import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -1004,20 +1006,46 @@ def scan_host_ports_proxy(target_ip, proxy_port):
     proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
     
     # IMPORTANT: Only -sT (TCP connect) works with proxychains - no -sS, -sU, or ping scans
+    # Wrap with shell timeout command for aggressive timeout enforcement (kills process after 10s)
     scan_commands = [
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 1000 {target_ip}",
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 500 {target_ip}",  # Fallback with fewer ports
-        f"proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 100 {target_ip}"   # Smaller port range fallback
+        f"timeout -k 2 10 proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 1000 {target_ip}",
+        f"timeout -k 2 10 proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 500 {target_ip}",  # Fallback with fewer ports
+        f"timeout -k 2 10 proxychains4 -f {proxychains_conf} nmap -Pn -sT --top-ports 100 {target_ip}"   # Smaller port range fallback
     ]
 
     # Try each scan command until one succeeds
     for i, command in enumerate(scan_commands):
         try:
             scan_type = ["TCP connect (1000 ports)", "TCP connect (500 ports)", "TCP connect (100 ports)"][i]
-            logger.info(f"Port scanning {target_ip} through proxy using {scan_type}")
+            logger.info(f"Port scanning {target_ip} through proxy using {scan_type} (max 10s)")
+
+            # Use Popen for better process control
+            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      universal_newlines=True, preexec_fn=os.setsid)
+
+            try:
+                stdout, stderr = process.communicate(timeout=12)  # 12s to allow timeout command to work
+                result = type('obj', (object,), {'returncode': process.returncode, 'stdout': stdout, 'stderr': stderr})()
+            except subprocess.TimeoutExpired:
+                # If even timeout command fails, forcefully kill the process group
+                logger.warning(f"Scan forcefully killed after timeout for {target_ip} (attempt {i+1})")
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except:
+                    pass
+                process.kill()
+                process.wait()
+                if i == len(scan_commands) - 1:
+                    return [], None
+                continue
             
-            result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
-            
+            # Exit code 124 means timeout command killed the process
+            if result.returncode == 124:
+                logger.warning(f"Scan timed out after 10 seconds for {target_ip} (attempt {i+1}), skipping to next method")
+                if i == len(scan_commands) - 1:
+                    return [], None
+                continue
+
             if result.returncode == 0 and result.stdout:
                 # Parse nmap output more robustly
                 lines = result.stdout.split('\n')
@@ -1028,15 +1056,15 @@ def scan_host_ports_proxy(target_ip, proxy_port):
                             port_proto = parts[0]
                             state = parts[1]
                             service = parts[2] if len(parts) > 2 else 'unknown'
-                            
+
                             if state == 'open':
                                 port = port_proto.split('/')[0]
                                 ports_info.append((port, service))
-                
+
                 # Try to get MAC address if possible
                 mac_match = re.search(r'MAC Address: ([0-9A-F:]{17})', result.stdout)
                 mac_addr = mac_match.group(1) if mac_match else None
-                
+
                 if ports_info or i == len(scan_commands) - 1:  # Return results if found or last attempt
                     logger.info(f"Successfully scanned {target_ip} through proxy, found {len(ports_info)} open ports")
                     return ports_info, mac_addr
