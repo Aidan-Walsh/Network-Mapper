@@ -34,6 +34,7 @@ ssh_hop_paths = {}  # Track the hop path to reach each device: {ip: [hop1_ip, ho
 
 # Note: We no longer need port candidates - always using port 9050
 discovered_devices = set()  # Track all discovered device IPs to prevent duplicates
+recursively_scanned_devices = set()  # Track devices we've SSH'd into and recursively scanned
 scanned_networks = set()  # Track scanned network ranges to prevent re-scanning
 device_network_map = {}  # Track which networks each device belongs to
 ssh_access_paths = {}  # Track SSH access paths to prevent cycles
@@ -1432,9 +1433,10 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
                 logger.debug(f"{'  ' * current_depth}{host_ip} is in hop path, skipping (already scanned)")
                 continue
 
-            # Skip if already discovered by another path
-            if is_device_already_discovered(host_ip):
-                logger.debug(f"{'  ' * current_depth}{host_ip} already discovered")
+            # Always scan ports and add to topology (even if discovered before)
+            # But skip SSH recursion if already recursively scanned
+            if host_ip in recursively_scanned_devices:
+                logger.debug(f"{'  ' * current_depth}{host_ip} already recursively scanned, skipping SSH attempt")
                 continue
 
             logger.info(f"{'  ' * current_depth}Scanning ports on {host_ip}")
@@ -1461,6 +1463,10 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
                 for try_user, try_pass in zip(usernames, passwords):
                     if attempt_ssh_connection(host_ip, try_user, try_pass, hop_path=new_hop_path):
                         logger.info(f"{'  ' * current_depth}SSH successful to {host_ip} via multi-hop")
+
+                        # Mark as recursively scanned BEFORE recursing to prevent duplicate attempts
+                        global recursively_scanned_devices
+                        recursively_scanned_devices.add(host_ip)
 
                         # RECURSE: Scan this device and its networks
                         scan_device_and_networks_recursive(
