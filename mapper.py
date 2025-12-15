@@ -818,7 +818,23 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
     # IMPORTANT: Always use port 9050 for dynamic forwarding (only port that works reliably)
     local_port = FIXED_SOCKS_PORT
 
-    logger.info(f"Setting up SSH tunnel to {target_ip} on fixed port {local_port}")
+    # Check if tunnel already exists and is working
+    if target_ip in ssh_tunnels and target_ip in ssh_processes:
+        existing_port = ssh_tunnels[target_ip]
+        existing_process = ssh_processes[target_ip]
+
+        # Verify the process is still running
+        if existing_process.poll() is None:  # Process is running
+            # Test if the tunnel is still working
+            if test_socks_proxy(existing_port, timeout=3):
+                logger.info(f"Reusing existing working tunnel to {target_ip} on port {existing_port}")
+                return existing_port
+            else:
+                logger.warning(f"Existing tunnel to {target_ip} is not responding, recreating...")
+        else:
+            logger.warning(f"Existing tunnel process to {target_ip} has died, recreating...")
+
+    logger.info(f"Setting up new SSH tunnel to {target_ip} on fixed port {local_port}")
 
     # Kill any existing tunnel to this target
     if target_ip in ssh_processes:
