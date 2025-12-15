@@ -1511,16 +1511,43 @@ def scan_network(joined_macs):
         
         # Filter out already discovered devices
         new_devices = [ip for ip in discovered_ips if not is_device_already_discovered(ip)]
-        
+
         if new_devices:
             logger.info(f"Found {len(new_devices)} new devices on network {network_id}")
             returned_dict[pivot_ip] = [new_devices, [], []]
         else:
-            logger.info(f"No new devices found on network {network_id}")
-            if network_id not in returned_dict:
-                returned_dict[pivot_ip] = [[], [], []]
-            continue
-    
+            logger.info(f"No new devices found on network {network_id} via nmap")
+            logger.info(f"Trying local ping sweep as fallback...")
+
+            # FALLBACK: Try a local ping sweep (faster, might find devices nmap missed)
+            # This runs ping commands locally instead of nmap
+            ping_command = f"""
+for i in $(seq {network_range[0]} {network_range[1]}); do
+    (ping -c 1 -W 1 {first_three_octets}.$i > /dev/null 2>&1 && echo {first_three_octets}.$i) &
+done
+wait
+"""
+            try:
+                result = subprocess.run(ping_command, shell=True, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
+                ping_ips = [line.strip() for line in result.stdout.split('\n') if line.strip() and line.strip() != pivot_ip]
+
+                if ping_ips:
+                    logger.info(f"Ping sweep found {len(ping_ips)} devices: {ping_ips}")
+                    new_devices = [ip for ip in ping_ips if not is_device_already_discovered(ip)]
+                    if new_devices:
+                        returned_dict[pivot_ip] = [new_devices, [], []]
+                else:
+                    logger.info(f"No devices found on network {network_id}, skipping")
+                    if network_id not in returned_dict:
+                        returned_dict[pivot_ip] = [[], [], []]
+                    continue
+            except Exception as e:
+                logger.warning(f"Local ping sweep failed: {e}")
+                if network_id not in returned_dict:
+                    returned_dict[pivot_ip] = [[], [], []]
+                continue
+
         # Now scan individual hosts and attempt SSH tunneling
         current_path = [pivot_ip]  # Track path to prevent cycles
         
