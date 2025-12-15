@@ -1356,6 +1356,17 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
         # Scan ports on each discovered host
         for host_ip in discovered_hosts:
+            # Skip if this is the current device itself (defensive check)
+            if host_ip == device_ip:
+                logger.debug(f"{'  ' * current_depth}{host_ip} is current device, skipping")
+                continue
+
+            # Skip if this device is in our hop path (we already SSH'd through it to get here)
+            if host_ip in hop_path:
+                logger.debug(f"{'  ' * current_depth}{host_ip} is in hop path, skipping (already scanned)")
+                continue
+
+            # Skip if already discovered by another path
             if is_device_already_discovered(host_ip):
                 logger.debug(f"{'  ' * current_depth}{host_ip} already discovered")
                 continue
