@@ -279,20 +279,21 @@ def extract_device():
         logger.error("No private networks found! Check your network configuration.")
         return False, ""
 
-    # IMPORTANT: Sort MACs to create a stable device identifier regardless of discovery order
-    # Filter out "unknown" MACs and sort the rest
-    valid_macs = [mac for mac in macs if mac != "unknown"]
+    # IMPORTANT: Use FIRST (lowest) MAC address as stable device identifier
+    # Normalize to lowercase and filter out "unknown" MACs
+    valid_macs = [mac.lower() for mac in macs if mac != "unknown"]
     if not valid_macs:
         # If no valid MACs, use hostname as fallback identifier
         import socket
         hostname = socket.gethostname()
-        mac_key = f"host_{hostname.replace('.', '_')}"
+        mac_key = f"host_{hostname.replace('.', '_').lower()}"
         logger.warning(f"No valid MAC addresses found, using hostname-based key: {mac_key}")
     else:
-        # Sort MACs alphabetically to ensure consistent key regardless of interface order
+        # Use ONLY the first (lowest) MAC as device identifier
+        # This ensures the same device always has the same ID regardless of how many interfaces are visible
         sorted_macs = sorted(valid_macs)
-        mac_key = "_".join(sorted_macs)  # Use underscore separator for readability
-        logger.debug(f"Created stable MAC key from {len(sorted_macs)} MACs: {mac_key[:50]}...")
+        mac_key = sorted_macs[0]  # Use first MAC only
+        logger.debug(f"Created stable device ID from first MAC (out of {len(sorted_macs)}): {mac_key}")
 
     if mac_key not in all_info:
         hostname = get_hostname()
@@ -585,18 +586,19 @@ def extract_remote_device_info(target_ip, username, password):
         return False, ""
 
     # Process the extracted information
-    # IMPORTANT: Sort MACs to create a stable device identifier regardless of discovery order
-    # Filter out "unknown" MACs and sort the rest
-    valid_macs = [mac for mac in returned_macs if mac != "unknown"]
+    # IMPORTANT: Use FIRST (lowest) MAC address as stable device identifier
+    # Normalize to lowercase and filter out "unknown" MACs
+    valid_macs = [mac.lower() for mac in returned_macs if mac != "unknown"]
     if not valid_macs:
         # If no valid MACs, use target IP as fallback identifier
         mac_key = f"ip_{target_ip.replace('.', '_')}"
         logger.warning(f"No valid MAC addresses found, using IP-based key: {mac_key}")
     else:
-        # Sort MACs alphabetically to ensure consistent key regardless of interface order
+        # Use ONLY the first (lowest) MAC as device identifier
+        # This ensures the same device always has the same ID regardless of how many interfaces are visible
         sorted_macs = sorted(valid_macs)
-        mac_key = "_".join(sorted_macs)  # Use underscore separator for readability
-        logger.debug(f"Created stable MAC key from {len(sorted_macs)} MACs: {mac_key[:50]}...")
+        mac_key = sorted_macs[0]  # Use first MAC only
+        logger.debug(f"Created stable device ID from first MAC (out of {len(sorted_macs)}): {mac_key}")
 
     if mac_key not in all_info:
         device_ips = []
@@ -1222,13 +1224,15 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
         except Exception as e:
             logger.warning(f"Error in {scan_type} sweep: {e}")
     
-    # Method 3: Fallback TCP connect scan to common ports (for networks that block ICMP)
-    if len(discovered_ips) < 2:  # If we didn't find many devices, try TCP connect
+    # Method 3: DISABLED - Fallback TCP connect scan (too slow, rely on ping sweeps instead)
+    # For remote networks, use ping_sweep_remote() which is much faster
+    # For local networks, ping sweeps should be sufficient
+    if False and len(discovered_ips) < 2:  # DISABLED: TCP scan fallback
         logger.info("Few devices found via ping, trying TCP connect scan...")
         try:
             tcp_command = f"nmap -sT -Pn --top-ports=10 --max-retries=1 --host-timeout=5s {network_base}.{start_range}-{end_range}"
             result = subprocess.run(tcp_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=180)
-            
+
             # Parse TCP scan results
             current_ip = None
             for line in result.stdout.split('\n'):
@@ -1240,7 +1244,7 @@ def discover_network_devices(network_base, start_range, end_range, pivot_ip):
                     discovered_ips.append(current_ip)
                     logger.info(f"Found device via TCP connect: {current_ip}")
                     current_ip = None
-                    
+
         except Exception as e:
             logger.warning(f"TCP connect scan failed: {e}")
     
@@ -1726,51 +1730,55 @@ def scan_network(joined_macs):
                             else:
                                 logger.error(f"Failed to create SSH tunnel to {discovered_ip}")
                         else:
-                            logger.warning(f"Could not extract network info from {discovered_ip}, will use tunnel scanning as fallback")
+                            logger.warning(f"Could not extract network info from {discovered_ip}, skipping fallback tunnel scanning (too slow)")
+                            logger.info(f"Use scan_device_and_networks_recursive() for proper multi-hop scanning instead")
 
-                            # Fallback: Create SSH tunnel and scan through proxy
-                            active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
+                            # DISABLED: Old fallback that uses slow TCP scans through proxychains
+                            # The recursive scanning function handles this better with ping sweeps
+                            if False:  # DISABLED: Slow TCP scan fallback
+                                # Fallback: Create SSH tunnel and scan through proxy
+                                active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
 
-                            if active_tunnel_port:
-                                # Scan networks accessible through this tunnel
-                                try:
-                                    time.sleep(2)  # Give tunnel time to establish
+                                if active_tunnel_port:
+                                    # Scan networks accessible through this tunnel
+                                    try:
+                                        time.sleep(2)  # Give tunnel time to establish
 
-                                    # Get network range for this device
-                                    device_network_range = get_network_range(discovered_ip, mask)
-                                    deeper_network_id = get_network_identifier(discovered_ip, mask)
+                                        # Get network range for this device
+                                        device_network_range = get_network_range(discovered_ip, mask)
+                                        deeper_network_id = get_network_identifier(discovered_ip, mask)
 
-                                    # Only scan if we haven't scanned this network through this device (using MAC)
-                                    fallback_network_scan_key = f"{deeper_network_id}_via_mac_{mac_addr}" if mac_addr else f"{deeper_network_id}_via_{discovered_ip}"
-                                    if not is_network_already_scanned(fallback_network_scan_key):
-                                        mark_network_as_scanned(fallback_network_scan_key)
+                                        # Only scan if we haven't scanned this network through this device (using MAC)
+                                        fallback_network_scan_key = f"{deeper_network_id}_via_mac_{mac_addr}" if mac_addr else f"{deeper_network_id}_via_{discovered_ip}"
+                                        if not is_network_already_scanned(fallback_network_scan_key):
+                                            mark_network_as_scanned(fallback_network_scan_key)
 
-                                        deeper_hosts = scan_through_proxy(discovered_ip, active_tunnel_port, device_network_range)
+                                            deeper_hosts = scan_through_proxy(discovered_ip, active_tunnel_port, device_network_range)
 
-                                        if deeper_hosts:
-                                            logger.info(f"Found {len(deeper_hosts)} additional hosts through {discovered_ip}")
+                                            if deeper_hosts:
+                                                logger.info(f"Found {len(deeper_hosts)} additional hosts through {discovered_ip}")
 
-                                            # Scan ports on newly discovered hosts
-                                            for deep_host in deeper_hosts:
-                                                if not is_device_already_discovered(deep_host):
-                                                    deep_ports, deep_mac = scan_host_ports_proxy(deep_host, active_tunnel_port)
+                                                # Scan ports on newly discovered hosts
+                                                for deep_host in deeper_hosts:
+                                                    if not is_device_already_discovered(deep_host):
+                                                        deep_ports, deep_mac = scan_host_ports_proxy(deep_host, active_tunnel_port)
 
-                                                    # Add to topology
-                                                    add_device_to_topology(
-                                                        deep_host, deep_mac, deep_ports, deeper_network_id,
-                                                        f"pivot->{discovered_ip}->{deep_host}",
-                                                        ssh_accessible=any(p[0] == '22' for p in deep_ports)
-                                                    )
+                                                        # Add to topology
+                                                        add_device_to_topology(
+                                                            deep_host, deep_mac, deep_ports, deeper_network_id,
+                                                            f"pivot->{discovered_ip}->{deep_host}",
+                                                            ssh_accessible=any(p[0] == '22' for p in deep_ports)
+                                                        )
 
-                                                    # Update returned data structure
-                                                    if discovered_ip not in returned_dict:
-                                                        returned_dict[discovered_ip] = [[], [], []]
-                                                    returned_dict[discovered_ip][0].append(deep_host)
-                                                    returned_dict[discovered_ip][1].append(deep_mac)
-                                                    returned_dict[discovered_ip][2].append(deep_ports)
+                                                        # Update returned data structure
+                                                        if discovered_ip not in returned_dict:
+                                                            returned_dict[discovered_ip] = [[], [], []]
+                                                        returned_dict[discovered_ip][0].append(deep_host)
+                                                        returned_dict[discovered_ip][1].append(deep_mac)
+                                                        returned_dict[discovered_ip][2].append(deep_ports)
 
-                                except Exception as e:
-                                    logger.error(f"Error scanning through tunnel to {discovered_ip}: {e}")
+                                    except Exception as e:
+                                        logger.error(f"Error scanning through tunnel to {discovered_ip}: {e}")
 
                         break  # Stop trying credentials once we have access
             
