@@ -1347,7 +1347,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
         current_depth: Current recursion depth (for logging)
         max_depth: Maximum depth to prevent infinite loops
     """
-    global all_info, usernames, passwords
+    global all_info, usernames, passwords, recursively_scanned_devices
 
     if current_depth >= max_depth:
         logger.warning(f"Reached maximum depth ({max_depth}) at {device_ip}, stopping recursion")
