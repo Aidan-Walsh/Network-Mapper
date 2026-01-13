@@ -1558,25 +1558,26 @@ wait
         current_path = [pivot_ip]  # Track path to prevent cycles
         
         for discovered_ip in new_devices:
-            if is_device_already_discovered(discovered_ip):
-                logger.info(f"Device {discovered_ip} already processed, skipping")
+            # Check if we've already attempted SSH on this device (prevents loops)
+            if discovered_ip in recursively_scanned_devices:
+                logger.info(f"Device {discovered_ip} already fully scanned (SSH attempted), skipping")
                 continue
-                
+
             logger.info(f"Analyzing device {discovered_ip}")
-            
+
             # First, scan ports on this host from pivot
             ports_info, mac_addr = scan_host_directly(discovered_ip)
-            
-            # Add device to topology
+
+            # Add device to topology (for visualization, but not marked as "fully scanned" yet)
             add_device_to_topology(
-                discovered_ip, mac_addr, ports_info, network_id, 
-                f"pivot->{discovered_ip}", 
+                discovered_ip, mac_addr, ports_info, network_id,
+                f"pivot->{discovered_ip}",
                 ssh_accessible=any(port[0] == '22' for port in ports_info)
             )
-            
+
             # Try to establish SSH connection for deeper scanning
             ssh_success = False
-            
+
             # Check if we should create tunnel (avoid cycles)
             if should_create_ssh_tunnel(discovered_ip, current_path):
                 for username, password in zip(usernames, passwords):
@@ -1602,172 +1603,14 @@ wait
                         except Exception as e:
                             logger.error(f"Error during recursive scan of {discovered_ip}: {e}")
 
-                        # OLD CODE BELOW - Completely disabled, using recursive function instead
-                        # All old fallback code is wrapped in "if False:" to prevent execution
-                        if False:
-                            remote_success, remote_mac_key = extract_remote_device_info(discovered_ip, username, password)
+            # Mark device as fully scanned AFTER SSH attempt (whether successful or not)
+            # This prevents re-attempting SSH on the same device in future network scans
+            recursively_scanned_devices.add(discovered_ip)
+            logger.debug(f"Marked {discovered_ip} as fully scanned")
 
-                        if False:  # DISABLED - recursive scanning handles this now
-                            logger.info(f"Successfully extracted network info from {discovered_ip}")
+            # Note: Legacy non-recursive scanning code was removed here.
+            # All network scanning is now handled by scan_device_and_networks_recursive()
 
-                            # Now create SSH tunnel to scan through this device
-                            logger.info(f"Creating SSH tunnel to {discovered_ip} for network scanning")
-                            active_tunnel_port = create_ssh_tunnel(discovered_ip, username, password)
-
-                            if active_tunnel_port:
-                                logger.info(f"SSH tunnel established on port {active_tunnel_port}")
-
-                                # Get the network information we just extracted from the remote device
-                                remote_device_info = all_info[remote_mac_key]
-                                remote_ips = remote_device_info[1]      # Device IPs on remote device
-                                remote_masks = remote_device_info[3]    # Network masks
-                                remote_ranges = remote_device_info[4]   # Network ranges to scan
-
-                                logger.info(f"Remote device has {len(remote_ips)} networks to scan through tunnel")
-
-                                # Scan each network discovered on the remote device THROUGH the proxy tunnel
-                                try:
-                                    time.sleep(2)  # Give tunnel time to establish
-
-                                    for idx, remote_net_ip in enumerate(remote_ips):
-                                        remote_network_range = remote_ranges[idx]
-                                        remote_mask = remote_masks[idx]
-                                        remote_network_id = get_network_identifier(remote_net_ip, remote_mask)
-
-                                        # Skip if already scanned from this device (using MAC for uniqueness)
-                                        # MAC addresses are unique, IPs are not!
-                                        network_scan_key = f"{remote_network_id}_via_mac_{remote_mac_key}"
-                                        if is_network_already_scanned(network_scan_key):
-                                            logger.info(f"Network {remote_network_id} already scanned through device with MAC {remote_mac_key[:17]}")
-                                            continue
-
-                                        mark_network_as_scanned(network_scan_key)
-
-                                        # IMPORTANT: Use ping sweep directly on remote device for host discovery
-                                        # This is MUCH faster than TCP scanning through proxychains
-                                        network_base = ".".join(remote_net_ip.split(".")[:3])
-                                        logger.info(f"Using ping sweep on {discovered_ip} to discover hosts on {network_base}.0/24")
-
-                                        # CRITICAL: Exclude the device's own IPs to prevent scanning itself!
-                                        deeper_hosts = ping_sweep_remote(
-                                            discovered_ip, username, password,
-                                            network_base,
-                                            remote_network_range[0],
-                                            remote_network_range[1],
-                                            exclude_ips=remote_ips  # Don't scan the device's own IPs!
-                                        )
-
-                                        if deeper_hosts:
-                                            logger.info(f"Found {len(deeper_hosts)} devices on {remote_network_id} through {discovered_ip}")
-
-                                            # Scan ports on each discovered host
-                                            for deep_host in deeper_hosts:
-                                                if not is_device_already_discovered(deep_host):
-                                                    deep_ports, deep_mac = scan_host_ports_proxy(deep_host, active_tunnel_port)
-
-                                                    # Check if this device has SSH open
-                                                    deep_has_ssh = any(p[0] == '22' for p in deep_ports)
-
-                                                    # Add to topology
-                                                    add_device_to_topology(
-                                                        deep_host, deep_mac, deep_ports, remote_network_id,
-                                                        f"pivot->{discovered_ip}->{deep_host}",
-                                                        ssh_accessible=deep_has_ssh
-                                                    )
-
-                                                    # Update returned data structure
-                                                    if discovered_ip not in returned_dict:
-                                                        returned_dict[discovered_ip] = [[], [], []]
-                                                    returned_dict[discovered_ip][0].append(deep_host)
-                                                    returned_dict[discovered_ip][1].append(deep_mac)
-                                                    returned_dict[discovered_ip][2].append(deep_ports)
-
-                                                    logger.info(f"Added device {deep_host} discovered through {discovered_ip}")
-
-                                                    # If device has SSH, try multi-hop connection to discover even deeper networks
-                                                    if deep_has_ssh:
-                                                        logger.info(f"Device {deep_host} has SSH, attempting multi-hop connection through {discovered_ip}")
-
-                                                        # Set up hop path for multi-hop connection
-                                                        deep_hop_path = current_path + [discovered_ip]
-                                                        ssh_hop_paths[deep_host] = deep_hop_path
-
-                                                        # Try to SSH into this deeper device
-                                                        for deep_user, deep_pass in zip(usernames, passwords):
-                                                            if attempt_ssh_connection(deep_host, deep_user, deep_pass, hop_path=deep_hop_path):
-                                                                logger.info(f"Multi-hop SSH successful to {deep_host} via {deep_hop_path}")
-
-                                                                # Store credentials
-                                                                ssh_credentials[deep_host] = (deep_user, deep_pass)
-
-                                                                # Extract network info from this deeper device
-                                                                deep_remote_success, deep_remote_mac_key = extract_remote_device_info(deep_host, deep_user, deep_pass)
-
-                                                                if deep_remote_success:
-                                                                    logger.info(f"Successfully extracted network info from multi-hop device {deep_host}")
-
-                                                                    # Create multi-hop tunnel to scan its networks
-                                                                    deep_tunnel_port = create_ssh_tunnel(deep_host, deep_user, deep_pass, hop_path=deep_hop_path)
-
-                                                                    if deep_tunnel_port:
-                                                                        logger.info(f"Multi-hop tunnel established to {deep_host} on port {deep_tunnel_port}")
-
-                                                                        # Get networks from this deeper device
-                                                                        deep_device_info = all_info[deep_remote_mac_key]
-                                                                        deep_ips = deep_device_info[1]
-                                                                        deep_masks = deep_device_info[3]
-                                                                        deep_ranges = deep_device_info[4]
-
-                                                                        # Scan networks through this multi-hop tunnel
-                                                                        for deep_idx, deep_net_ip in enumerate(deep_ips):
-                                                                            deep_net_range = deep_ranges[deep_idx]
-                                                                            deep_net_mask = deep_masks[deep_idx]
-                                                                            deep_net_id = get_network_identifier(deep_net_ip, deep_net_mask)
-
-                                                                            # Use MAC for uniqueness in multi-hop scenarios
-                                                                            deep_network_scan_key = f"{deep_net_id}_via_mac_{deep_remote_mac_key}"
-                                                                            if not is_network_already_scanned(deep_network_scan_key):
-                                                                                mark_network_as_scanned(deep_network_scan_key)
-
-                                                                                # Use ping sweep on the multi-hop device for host discovery
-                                                                                deep_network_base = ".".join(deep_net_ip.split(".")[:3])
-                                                                                logger.info(f"Using ping sweep on {deep_host} (multi-hop) to discover hosts on {deep_network_base}.0/24")
-
-                                                                                # Get credentials for deep_host
-                                                                                deep_user, deep_pass = ssh_credentials[deep_host]
-
-                                                                                # CRITICAL: Exclude the device's own IPs to prevent scanning itself!
-                                                                                even_deeper_hosts = ping_sweep_remote(
-                                                                                    deep_host, deep_user, deep_pass,
-                                                                                    deep_network_base,
-                                                                                    deep_net_range[0],
-                                                                                    deep_net_range[1],
-                                                                                    exclude_ips=deep_ips  # Don't scan the device's own IPs!
-                                                                                )
-
-                                                                                if even_deeper_hosts:
-                                                                                    logger.info(f"Found {len(even_deeper_hosts)} devices through multi-hop to {deep_host}")
-                                                                                    # Add these to the topology (stopping at 3 hops for now)
-                                                                                    for even_deeper in even_deeper_hosts:
-                                                                                        if not is_device_already_discovered(even_deeper):
-                                                                                            ed_ports, ed_mac = scan_host_ports_proxy(even_deeper, deep_tunnel_port)
-                                                                                            add_device_to_topology(
-                                                                                                even_deeper, ed_mac, ed_ports, deep_net_id,
-                                                                                                f"pivot->{discovered_ip}->{deep_host}->{even_deeper}",
-                                                                                                ssh_accessible=any(p[0] == '22' for p in ed_ports)
-                                                                                            )
-
-                                                                break  # Stop trying credentials once successful
-
-                                except Exception as e:
-                                    logger.error(f"Error scanning networks through {discovered_ip}: {e}")
-                            else:
-                                logger.error(f"Failed to create SSH tunnel to {discovered_ip}")
-
-                        # END OF DISABLED OLD CODE - The recursive function handles all scanning now
-
-                        break  # Stop trying credentials once we have access
-            
             # Update main returned data structure
             if pivot_ip not in returned_dict:
                 returned_dict[pivot_ip] = [[], [], []]
