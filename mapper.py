@@ -367,16 +367,22 @@ def attempt_ssh_connection(target_ip, username, password, hop_path=None):
         proxy_command = build_proxy_command_chain(target_ip)
 
     if proxy_command:
-        logger.debug(f"Testing SSH connection to {target_ip} via multi-hop")
+        logger.info(f"Testing SSH connection to {target_ip} via multi-hop with user {username}")
         test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ProxyCommand='{proxy_command}' {username}@{target_ip} 'echo connected'"
     else:
-        logger.debug(f"Testing SSH connection to {target_ip} (direct)")
+        logger.info(f"Testing SSH connection to {target_ip} (direct) with user {username}")
         test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
 
     try:
         result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
-        return result.returncode == 0
-    except:
+        if result.returncode == 0:
+            logger.info(f"✓ SSH connection successful to {target_ip} with {username}")
+            return True
+        else:
+            logger.info(f"✗ SSH connection failed to {target_ip} with {username}: {result.stderr.strip()[:100]}")
+            return False
+    except Exception as e:
+        logger.warning(f"✗ SSH connection exception for {target_ip} with {username}: {e}")
         return False
 
 def execute_remote_command(target_ip, username, password, command, timeout=30):
@@ -703,21 +709,24 @@ def mark_network_as_scanned(network_range):
 def should_create_ssh_tunnel(target_ip, current_path):
     """Determine if we should create an SSH tunnel to avoid cycles"""
     global ssh_access_paths
-    
+
     # Don't create tunnel if device is already accessible through a shorter path
     if target_ip in ssh_access_paths:
         existing_path_length = len(ssh_access_paths[target_ip])
         current_path_length = len(current_path) + 1
-        
+
         if existing_path_length <= current_path_length:
             logger.info(f"Skipping SSH tunnel to {target_ip} - already accessible via shorter path")
+            logger.info(f"  Existing path length: {existing_path_length}, Current path length: {current_path_length}")
+            logger.info(f"  Existing path: {ssh_access_paths[target_ip]}")
             return False
-    
+
     # Check for potential cycles
     if target_ip in current_path:
         logger.warning(f"Cycle detected: {target_ip} already in path {current_path}")
         return False
-    
+
+    logger.debug(f"SSH tunnel check passed for {target_ip}, current path: {current_path}")
     return True
 
 def get_network_identifier(ip, mask):
@@ -1579,8 +1588,15 @@ wait
             ssh_success = False
 
             # Check if we should create tunnel (avoid cycles)
+            logger.info(f"Checking if SSH tunnel should be created for {discovered_ip}")
             if should_create_ssh_tunnel(discovered_ip, current_path):
+                logger.info(f"Attempting SSH credentials for {discovered_ip} (have {len(usernames)} credentials to try)")
+
+                if len(usernames) == 0:
+                    logger.warning("No credentials available! Check credentials.txt file")
+
                 for username, password in zip(usernames, passwords):
+                    logger.debug(f"Trying credential {username}:{'*' * len(password)}")
                     if attempt_ssh_connection(discovered_ip, username, password, hop_path=current_path):
                         logger.info(f"SSH access successful to {discovered_ip} with {username}")
                         ssh_success = True
@@ -1602,6 +1618,13 @@ wait
                             )
                         except Exception as e:
                             logger.error(f"Error during recursive scan of {discovered_ip}: {e}")
+
+                        break  # Stop trying credentials once successful
+
+                if not ssh_success:
+                    logger.info(f"No valid SSH credentials found for {discovered_ip}")
+            else:
+                logger.info(f"SSH tunnel creation skipped for {discovered_ip} (cycle prevention or already accessible)")
 
             # Mark device as fully scanned AFTER SSH attempt (whether successful or not)
             # This prevents re-attempting SSH on the same device in future network scans
@@ -1640,22 +1663,40 @@ wait
 
 
       
-# to be run from the pivot machine 
+# to be run from the pivot machine
 credentials_file = "credentials.txt"
 
 # store usernames and passwords separately to be used
 usernames = []
 passwords = []
-with open("credentials.txt", "r") as file_obj:
-  content = file_obj.read()
-  lines = content.split("\n")
-  for line in lines:
-    credential = line.split(":")
-    usernames.append(credential[0])
-    try:
-      passwords.append(credential[1])
-    except: 
-      print("Error parsing credentials file")
+logger.info(f"Loading credentials from {credentials_file}")
+try:
+    with open("credentials.txt", "r") as file_obj:
+        content = file_obj.read()
+        lines = content.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):  # Skip empty lines and comments
+                continue
+            if ":" not in line:
+                logger.warning(f"Invalid credential format (missing colon): {line}")
+                continue
+            credential = line.split(":", 1)  # Split on first colon only
+            if len(credential) >= 2:
+                usernames.append(credential[0])
+                passwords.append(credential[1])
+                logger.info(f"Loaded credential for user: {credential[0]}")
+            else:
+                logger.warning(f"Invalid credential format: {line}")
+
+    logger.info(f"Total credentials loaded: {len(usernames)}")
+    if len(usernames) == 0:
+        logger.error("WARNING: No credentials loaded! SSH attempts will fail.")
+except FileNotFoundError:
+    logger.error(f"ERROR: Credentials file '{credentials_file}' not found!")
+    logger.error("Create a credentials.txt file with format: username:password")
+except Exception as e:
+    logger.error(f"Error loading credentials: {e}")
 
 # dictionary of all devices and their information
 # format: key = hostname, value = [[interfaces], [ips],[masks], [network ranges], [ports], [processes]]  
