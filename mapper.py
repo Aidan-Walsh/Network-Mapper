@@ -32,6 +32,12 @@ ssh_processes = {}  # Track SSH tunnel processes to keep them alive: {ip: subpro
 ssh_credentials = {}  # Track SSH credentials for each device: {ip: (username, password)}
 ssh_hop_paths = {}  # Track the hop path to reach each device: {ip: [hop1_ip, hop2_ip, ...]}
 
+# Local port forwarding for multi-hop SSH access
+# Maps device IP to local port that forwards to it: {device_ip: local_port}
+local_port_forwards = {}
+local_forward_processes = {}  # Track local forward processes: {device_ip: subprocess.Popen}
+next_local_port = 10000  # Start assigning local forward ports from 10000
+
 # Note: We no longer need port candidates - always using port 9050
 discovered_devices = set()  # Track all discovered device IPs to prevent duplicates
 recursively_scanned_devices = set()  # Track devices we've SSH'd into and recursively scanned
@@ -349,29 +355,154 @@ def extract_device():
         logger.info("Device already processed")
         return False, ""
 
-def attempt_ssh_connection(target_ip, username, password, hop_path=None):
-    """Test if SSH connection is possible to a target (supports multi-hop via ProxyCommand)"""
-    # Build ProxyCommand chain if needed for multi-hop
-    if hop_path:
-        # Temporarily store hop_path for building proxy command
-        global ssh_hop_paths, ssh_credentials
-        original_hop_path = ssh_hop_paths.get(target_ip)
-        ssh_hop_paths[target_ip] = hop_path
-        proxy_command = build_proxy_command_chain(target_ip)
-        # Restore original if it existed, otherwise remove temp entry
-        if original_hop_path is not None:
-            ssh_hop_paths[target_ip] = original_hop_path
-        else:
-            ssh_hop_paths.pop(target_ip, None)
-    else:
-        proxy_command = build_proxy_command_chain(target_ip)
+def create_local_port_forward(target_ip, target_port, via_ip, via_username, via_password, via_local_port=None):
+    """
+    Create a local port forward to access target_ip through via_ip
 
-    if proxy_command:
-        logger.info(f"Testing SSH connection to {target_ip} via multi-hop with user {username}")
-        test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ProxyCommand='{proxy_command}' {username}@{target_ip} 'echo connected'"
+    Args:
+        target_ip: IP of the device we want to reach
+        target_port: Port on target device (usually 22 for SSH)
+        via_ip: IP of intermediate device (or None for direct connection)
+        via_username: Username for intermediate device
+        via_password: Password for intermediate device
+        via_local_port: If via_ip is also forwarded, the local port to reach it (None if direct)
+
+    Returns:
+        local_port: The local port that forwards to target_ip, or None if failed
+    """
+    global next_local_port, local_port_forwards, local_forward_processes
+
+    # Check if we already have a forward for this device
+    if target_ip in local_port_forwards:
+        logger.info(f"Local port forward already exists for {target_ip} on port {local_port_forwards[target_ip]}")
+        return local_port_forwards[target_ip]
+
+    # Assign a new local port
+    local_port = next_local_port
+    next_local_port += 1
+
+    # Build the SSH command for local port forwarding
+    if via_local_port is None:
+        # Direct connection to via_ip
+        ssh_cmd = (
+            f"sshpass -p '{via_password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-L {local_port}:{target_ip}:{target_port} "
+            f"-N {via_username}@{via_ip}"
+        )
+        logger.info(f"Creating local port forward: localhost:{local_port} -> {via_ip} -> {target_ip}:{target_port}")
     else:
+        # Multi-hop: Connect through existing local forward
+        ssh_cmd = (
+            f"sshpass -p '{via_password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-p {via_local_port} "
+            f"-L {local_port}:{target_ip}:{target_port} "
+            f"-N {via_username}@localhost"
+        )
+        logger.info(f"Creating multi-hop local port forward: localhost:{local_port} -> localhost:{via_local_port} -> {target_ip}:{target_port}")
+
+    logger.debug(f"SSH forward command: {ssh_cmd.replace(via_password, '***')}")
+
+    try:
+        # Start the SSH tunnel process in the background
+        process = subprocess.Popen(
+            ssh_cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+
+        # Give it a moment to establish
+        time.sleep(2)
+
+        # Check if process is still running
+        if process.poll() is not None:
+            # Process died
+            stderr = process.stderr.read()
+            logger.error(f"Local port forward failed to establish: {stderr[:200]}")
+            return None
+
+        # Store the forward
+        local_port_forwards[target_ip] = local_port
+        local_forward_processes[target_ip] = process
+
+        logger.info(f"✓ Local port forward established: localhost:{local_port} forwards to {target_ip}:{target_port}")
+        return local_port
+
+    except Exception as e:
+        logger.error(f"Failed to create local port forward to {target_ip}: {e}")
+        return None
+
+def attempt_ssh_connection(target_ip, username, password, hop_path=None):
+    """Test if SSH connection is possible to a target (supports multi-hop via local port forwards)"""
+    global local_port_forwards, ssh_credentials
+
+    # Determine if we need local port forward (multi-hop) or direct connection
+    if hop_path and len(hop_path) > 0:
+        # Multi-hop: need to use local port forward
+        # hop_path is the path TO the intermediate device, e.g., [pivot_ip] or [pivot_ip, device_a_ip]
+        logger.info(f"Testing SSH connection to {target_ip} via hop path {hop_path} with user {username}")
+
+        # Check if we already have a local port forward to this device
+        if target_ip in local_port_forwards:
+            local_port = local_port_forwards[target_ip]
+            logger.debug(f"Using existing local port forward on port {local_port}")
+        else:
+            # We need to establish a forward chain
+            # The last device in hop_path is the one we SSH through
+            via_ip = hop_path[-1]
+
+            if via_ip not in ssh_credentials:
+                logger.error(f"No credentials found for intermediate hop {via_ip}")
+                return False
+
+            via_username, via_password = ssh_credentials[via_ip]
+
+            # Determine if via_ip itself needs a forward (if hop_path has more than 1 hop)
+            if len(hop_path) > 1:
+                # via_ip is also accessed through a forward
+                if via_ip not in local_port_forwards:
+                    logger.error(f"No local port forward exists for intermediate hop {via_ip}")
+                    return False
+                via_local_port = local_port_forwards[via_ip]
+            else:
+                # via_ip is directly accessible (no forward needed)
+                via_local_port = None
+
+            # Create the local port forward to target_ip
+            logger.info(f"Creating local port forward to {target_ip} through {via_ip}")
+            local_port = create_local_port_forward(
+                target_ip=target_ip,
+                target_port=22,
+                via_ip=via_ip,
+                via_username=via_username,
+                via_password=via_password,
+                via_local_port=via_local_port
+            )
+
+            if not local_port:
+                logger.error(f"Failed to create local port forward to {target_ip}")
+                return False
+
+        # Now test SSH connection through the local forward
+        test_command = (
+            f"sshpass -p '{password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout=10 "
+            f"-p {local_port} {username}@localhost 'echo connected'"
+        )
+        logger.debug(f"Testing SSH via localhost:{local_port}")
+    else:
+        # Direct connection
         logger.info(f"Testing SSH connection to {target_ip} (direct) with user {username}")
-        test_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} 'echo connected'"
+        test_command = (
+            f"sshpass -p '{password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout=10 "
+            f"{username}@{target_ip} 'echo connected'"
+        )
 
     try:
         result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
@@ -386,16 +517,28 @@ def attempt_ssh_connection(target_ip, username, password, hop_path=None):
         return False
 
 def execute_remote_command(target_ip, username, password, command, timeout=30):
-    """Execute a command on a remote device via SSH (supports multi-hop) and return the output"""
-    # Build ProxyCommand chain if needed for multi-hop
-    proxy_command = build_proxy_command_chain(target_ip)
+    """Execute a command on a remote device via SSH (supports multi-hop via local forwards) and return the output"""
+    global local_port_forwards
 
-    if proxy_command:
-        logger.debug(f"Executing remote command on {target_ip} via multi-hop")
-        ssh_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ProxyCommand='{proxy_command}' {username}@{target_ip} '{command}'"
+    # Check if we have a local port forward for this device (multi-hop)
+    if target_ip in local_port_forwards:
+        local_port = local_port_forwards[target_ip]
+        logger.debug(f"Executing remote command on {target_ip} via local port forward (localhost:{local_port})")
+        ssh_command = (
+            f"sshpass -p '{password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout=10 "
+            f"-p {local_port} {username}@localhost '{command}'"
+        )
     else:
+        # Direct connection
         logger.debug(f"Executing remote command on {target_ip} (direct)")
-        ssh_command = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {username}@{target_ip} '{command}'"
+        ssh_command = (
+            f"sshpass -p '{password}' ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ConnectTimeout=10 "
+            f"{username}@{target_ip} '{command}'"
+        )
 
     try:
         result = subprocess.run(ssh_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
@@ -873,11 +1016,12 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
-            # Check if we need multi-hop connection
-            proxy_command = build_proxy_command_chain(target_ip)
+            # Check if we need multi-hop connection (use local port forward instead of ProxyCommand)
+            use_local_forward = target_ip in local_port_forwards
 
-            if proxy_command:
-                logger.info(f"Creating multi-hop SSH tunnel to {target_ip} via {ssh_hop_paths[target_ip]} on port {local_port} (attempt {attempt + 1})")
+            if use_local_forward:
+                forward_port = local_port_forwards[target_ip]
+                logger.info(f"Creating multi-hop SSH tunnel to {target_ip} via localhost:{forward_port} on port {local_port} (attempt {attempt + 1})")
             else:
                 logger.info(f"Creating direct SSH tunnel to {target_ip} on port {local_port} (attempt {attempt + 1})")
 
@@ -895,16 +1039,25 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                 '-o', 'Compression=yes'          # Enable compression for better performance
             ]
 
-            # Add ProxyCommand if multi-hop connection is needed
-            if proxy_command:
-                command.extend(['-o', f'ProxyCommand={proxy_command}'])
+            # Add port if using local forward (multi-hop)
+            if use_local_forward:
+                command.extend(['-p', str(forward_port)])
 
             # Add dynamic port forward and target (ALWAYS port 9050)
-            command.extend([
-                '-D', str(local_port),
-                '-N',  # No remote command
-                f'{username}@{target_ip}'
-            ])
+            if use_local_forward:
+                # Multi-hop: connect through local forward
+                command.extend([
+                    '-D', str(local_port),
+                    '-N',  # No remote command
+                    f'{username}@localhost'
+                ])
+            else:
+                # Direct connection
+                command.extend([
+                    '-D', str(local_port),
+                    '-N',  # No remote command
+                    f'{username}@{target_ip}'
+                ])
 
             logger.debug(f"SSH command: {' '.join(command)}")
 
@@ -2168,12 +2321,25 @@ wait
 # - SSH tunnel paths for deeper network access
 
 def cleanup_ssh_tunnels():
-    """Clean up SSH tunnels (all on port 9050) and temporary files"""
-    global ssh_tunnels, ssh_processes, FIXED_SOCKS_PORT
+    """Clean up SSH tunnels (all on port 9050), local port forwards, and temporary files"""
+    global ssh_tunnels, ssh_processes, FIXED_SOCKS_PORT, local_port_forwards, local_forward_processes
 
-    logger.info("Cleaning up SSH tunnels...")
+    logger.info("Cleaning up SSH tunnels and local port forwards...")
 
-    # First, kill tracked SSH processes gracefully
+    # First, kill tracked local port forward processes
+    for target_ip, process in list(local_forward_processes.items()):
+        try:
+            local_port = local_port_forwards.get(target_ip, "unknown")
+            logger.info(f"Terminating local port forward to {target_ip} (port {local_port}, PID: {process.pid})")
+            process.terminate()
+            process.wait(timeout=3)
+        except:
+            try:
+                process.kill()
+            except:
+                pass
+
+    # Kill tracked SSH tunnel processes gracefully
     for target_ip, process in list(ssh_processes.items()):
         try:
             logger.info(f"Terminating tunnel process to {target_ip} (PID: {process.pid})")
@@ -2189,24 +2355,27 @@ def cleanup_ssh_tunnels():
     logger.info(f"Killing all processes using port {FIXED_SOCKS_PORT}")
     force_kill_port_9050()
 
-    # Kill any remaining SSH tunnel processes
+    # Kill any remaining SSH tunnel and local forward processes
     try:
         subprocess.run("pkill -f 'ssh.*-D.*-N'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run("pkill -f 'ssh.*-L.*-N'", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except:
         pass
-    
+
     # Remove temporary proxychains config files
     try:
         subprocess.run("rm -f /tmp/proxychains_*.conf", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         logger.info("Removed temporary proxychains configuration files")
     except:
         pass
-    
+
     # Clear tracking variables
     ssh_tunnels.clear()
     ssh_processes.clear()
     ssh_credentials.clear()
     ssh_hop_paths.clear()
+    local_port_forwards.clear()
+    local_forward_processes.clear()
 
     # Give time for cleanup
     time.sleep(2)

@@ -6,3 +6,5 @@ sudo systemctl restart sshd
 sudo apt update
 apt install nmap
 apt install proxychains
+apt install proxychains4
+apt install sshpass
