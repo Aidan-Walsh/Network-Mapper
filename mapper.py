@@ -402,7 +402,9 @@ def create_local_port_forward(target_ip, target_port, via_ip, via_username, via_
         )
         logger.info(f"Creating multi-hop local port forward: localhost:{local_port} -> localhost:{via_local_port} -> {target_ip}:{target_port}")
 
-    logger.debug(f"SSH forward command: {ssh_cmd.replace(via_password, '***')}")
+    # Log the full command with password masked
+    masked_cmd = ssh_cmd.replace(via_password, '***PASSWORD***')
+    logger.info(f"[SSH COMMAND] Local forward: {masked_cmd}")
 
     try:
         # Start the SSH tunnel process in the background
@@ -504,6 +506,10 @@ def attempt_ssh_connection(target_ip, username, password, hop_path=None):
             f"{username}@{target_ip} 'echo connected'"
         )
 
+    # Log the full command with password masked
+    masked_cmd = test_command.replace(password, '***PASSWORD***')
+    logger.info(f"[SSH COMMAND] Connection test: {masked_cmd}")
+
     try:
         result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
         if result.returncode == 0:
@@ -539,6 +545,10 @@ def execute_remote_command(target_ip, username, password, command, timeout=30):
             f"-o ConnectTimeout=10 "
             f"{username}@{target_ip} '{command}'"
         )
+
+    # Log the full command with password masked
+    masked_cmd = ssh_command.replace(password, '***PASSWORD***')
+    logger.debug(f"[SSH COMMAND] Remote execution: {masked_cmd}")
 
     try:
         result = subprocess.run(ssh_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
@@ -912,22 +922,34 @@ def get_available_port():
 
 def test_socks_proxy(port, timeout=10):
     """Test if SOCKS proxy is working on given port"""
+    logger.info(f"Testing SOCKS proxy on 127.0.0.1:{port}")
+
     try:
         import socks
+        logger.debug(f"Using Python socks module to test proxy on port {port}")
         s = socks.socksocket()
         s.set_proxy(socks.SOCKS5, "127.0.0.1", port)
         s.settimeout(timeout)
         # Try to connect to a known good address
         s.connect(("8.8.8.8", 53))  # Google DNS
         s.close()
+        logger.info(f"✓ SOCKS proxy on port {port} is responding (Python socks test)")
         return True
-    except:
+    except Exception as e:
+        logger.debug(f"Python socks test failed: {e}")
         # Fallback test using curl if socks module not available
         try:
             test_cmd = f"timeout {timeout} curl -x socks5://127.0.0.1:{port} -s http://www.google.com --max-time {timeout}"
+            logger.debug(f"Trying curl test: {test_cmd}")
             result = subprocess.run(test_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout+2)
-            return result.returncode == 0
-        except:
+            if result.returncode == 0:
+                logger.info(f"✓ SOCKS proxy on port {port} is responding (curl test)")
+                return True
+            else:
+                logger.warning(f"✗ SOCKS proxy on port {port} not responding (curl failed)")
+                return False
+        except Exception as e2:
+            logger.warning(f"✗ SOCKS proxy on port {port} not responding (curl exception: {e2})")
             return False
 
 def build_proxy_command_chain(target_ip):
@@ -1059,7 +1081,10 @@ def create_ssh_tunnel(target_ip, username, password, preferred_port=None, hop_pa
                     f'{username}@{target_ip}'
                 ])
 
-            logger.debug(f"SSH command: {' '.join(command)}")
+            # Log the full command with password masked
+            command_str = ' '.join(command)
+            masked_cmd = command_str.replace(password, '***PASSWORD***')
+            logger.info(f"[SSH COMMAND] Dynamic tunnel (-D {local_port}): {masked_cmd}")
 
             # Start SSH process in background
             process = subprocess.Popen(
@@ -1168,7 +1193,7 @@ def scan_through_proxy(target_ip, proxy_port, scan_range=None):
     
     # Configure proxychains for this specific proxy with multiple fallback configs
     proxychains_conf = f"/tmp/proxychains_{proxy_port}.conf"
-    
+
     # Create robust proxychains configuration
     proxychains_config = f"""# Proxychains config for port {proxy_port}
 strict_chain
@@ -1184,9 +1209,11 @@ localnet 192.168.0.0/255.255.0.0
 [ProxyList]
 socks5 127.0.0.1 {proxy_port}
 """
-    
+
     with open(proxychains_conf, 'w') as f:
         f.write(proxychains_config)
+
+    logger.info(f"[PROXYCHAINS CONFIG] Created {proxychains_conf} with SOCKS5 proxy at 127.0.0.1:{proxy_port}")
     
     if scan_range:
         # TCP connect scan through proxy (ping sweeps don't work with proxychains)
@@ -1200,6 +1227,7 @@ socks5 127.0.0.1 {proxy_port}
 
         try:
             logger.info(f"TCP scanning network {network_base}.{start_range}-{end_range} through proxy (proxychains -sT)")
+            logger.info(f"[PROXYCHAINS COMMAND] Network scan: {command}")
             result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=600)
 
             # Parse nmap output for discovered hosts (any host with at least one open port)
@@ -1245,6 +1273,7 @@ def scan_host_ports_proxy(target_ip, proxy_port):
         try:
             scan_type = ["TCP connect (1000 ports)", "TCP connect (500 ports)", "TCP connect (100 ports)"][i]
             logger.info(f"Port scanning {target_ip} through proxy using {scan_type} (max 10s)")
+            logger.info(f"[PROXYCHAINS COMMAND] Port scan: {command}")
 
             # Use Popen for better process control
             process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
