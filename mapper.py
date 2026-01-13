@@ -1531,9 +1531,9 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
     logger.info(f"{'  ' * current_depth}Successfully extracted network info from {device_ip}")
 
-    # Create SSH tunnel to this device
+    # Create SSH tunnel to this device (SOCKS proxy for port scanning)
     logger.info(f"{'  ' * current_depth}Creating SSH tunnel to {device_ip}")
-    tunnel_port = create_ssh_tunnel(device_ip, username, password, hop_path=hop_path if len(hop_path) > 1 else None)
+    tunnel_port = create_ssh_tunnel(device_ip, username, password, hop_path=hop_path)
 
     if not tunnel_port:
         logger.error(f"{'  ' * current_depth}Failed to create SSH tunnel to {device_ip}")
@@ -1717,7 +1717,9 @@ wait
                 continue
 
         # Now scan individual hosts and attempt SSH tunneling
-        current_path = [pivot_ip]  # Track path to prevent cycles
+        # current_path tracks devices we've hopped THROUGH to get here
+        # Since we're scanning FROM the pivot (not through it), start with empty path
+        current_path = []
         
         for discovered_ip in new_devices:
             # Check if we've already attempted SSH on this device (prevents loops)
