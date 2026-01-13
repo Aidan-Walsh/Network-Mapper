@@ -1465,7 +1465,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
                         logger.info(f"{'  ' * current_depth}SSH successful to {host_ip} via multi-hop")
 
                         # Mark as recursively scanned BEFORE recursing to prevent duplicate attempts
-                        global recursively_scanned_devices
+                        
                         recursively_scanned_devices.add(host_ip)
 
                         # RECURSE: Scan this device and its networks
