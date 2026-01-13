@@ -1671,6 +1671,27 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
     # Scan each network discovered on this device
     time.sleep(2)  # Give tunnel time to establish
 
+    # Build a list of IPs to exclude from scanning:
+    # 1. Current device's IPs
+    # 2. All IPs of devices in our hop path (to avoid scanning back through our path)
+    exclude_ips_set = set(device_ips)
+
+    # Add all IPs from devices in our hop path
+    for hop_device_ip in hop_path:
+        # Look up this device's info to get all its IPs
+        if hop_device_ip in ssh_credentials:
+            # Try to find this device's MAC/info in all_info
+            for mac_key, device_data in all_info.items():
+                device_data_ips = device_data[1]  # IPs are at index 1
+                if hop_device_ip in device_data_ips:
+                    # This is the device - add all its IPs to exclude list
+                    exclude_ips_set.update(device_data_ips)
+                    logger.debug(f"{'  ' * current_depth}Excluding parent device {hop_device_ip} IPs: {device_data_ips}")
+                    break
+
+    exclude_ips_list = list(exclude_ips_set)
+    logger.debug(f"{'  ' * current_depth}Will exclude {len(exclude_ips_list)} IPs from discovery: {exclude_ips_list}")
+
     for idx, net_ip in enumerate(device_ips):
         network_range = device_ranges[idx]
         network_mask = device_masks[idx]
@@ -1693,7 +1714,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
             network_base,
             network_range[0],
             network_range[1],
-            exclude_ips=device_ips  # Don't scan device's own IPs
+            exclude_ips=exclude_ips_list  # Exclude current device AND all hop path devices
         )
 
         if not discovered_hosts:
@@ -1703,7 +1724,10 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
         logger.info(f"{'  ' * current_depth}Found {len(discovered_hosts)} hosts on {network_id}")
 
         # Scan ports on each discovered host
+        logger.info(f"{'  ' * current_depth}Processing {len(discovered_hosts)} discovered hosts: {discovered_hosts}")
         for host_ip in discovered_hosts:
+            logger.debug(f"{'  ' * current_depth}Processing host {host_ip}")
+
             # Skip if this is the current device itself (defensive check)
             if host_ip == device_ip:
                 logger.debug(f"{'  ' * current_depth}{host_ip} is current device, skipping")
@@ -1711,13 +1735,13 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
             # Skip if this device is in our hop path (we already SSH'd through it to get here)
             if host_ip in hop_path:
-                logger.debug(f"{'  ' * current_depth}{host_ip} is in hop path, skipping (already scanned)")
+                logger.info(f"{'  ' * current_depth}{host_ip} is in hop path {hop_path}, skipping (came from there)")
                 continue
 
             # Always scan ports and add to topology (even if discovered before)
             # But skip SSH recursion if already recursively scanned
             if host_ip in recursively_scanned_devices:
-                logger.debug(f"{'  ' * current_depth}{host_ip} already recursively scanned, skipping SSH attempt")
+                logger.info(f"{'  ' * current_depth}{host_ip} already recursively scanned, skipping SSH attempt")
                 continue
 
             logger.info(f"{'  ' * current_depth}Scanning ports on {host_ip}")
@@ -1759,6 +1783,8 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
                         break  # Stop trying credentials once successful
             else:
                 logger.debug(f"{'  ' * current_depth}{host_ip} has no SSH, not scanning deeper")
+
+        logger.info(f"{'  ' * current_depth}Completed scanning all {len(discovered_hosts)} hosts on {network_id}")
 
 def scan_network(joined_macs):
     """Enhanced network scanning with cycle detection and deduplication"""
@@ -1839,8 +1865,13 @@ wait
         # current_path tracks devices we've hopped THROUGH to get here
         # Since we're scanning FROM the pivot (not through it), start with empty path
         current_path = []
-        
+
+        logger.info(f"=== Processing {len(new_devices)} devices discovered on {network_id} from pivot ===")
+        logger.info(f"Devices to process: {new_devices}")
+
         for discovered_ip in new_devices:
+            logger.info(f"--- Processing device {discovered_ip} ({new_devices.index(discovered_ip) + 1}/{len(new_devices)}) ---")
+
             # Check if we've already attempted SSH on this device (prevents loops)
             if discovered_ip in recursively_scanned_devices:
                 logger.info(f"Device {discovered_ip} already fully scanned (SSH attempted), skipping")
@@ -1882,11 +1913,12 @@ wait
                         ssh_access_paths[discovered_ip] = current_path + [discovered_ip]
 
                         # USE RECURSIVE FUNCTION: Scan this device and all its networks (unlimited depth)
+                        # Pass [pivot_ip] as hop_path so that when the device scans, it excludes pivot's IPs
                         logger.info(f"Recursively scanning {discovered_ip} and its networks")
                         try:
                             scan_device_and_networks_recursive(
                                 discovered_ip, username, password,
-                                hop_path=current_path,
+                                hop_path=[pivot_ip],  # Include pivot so its IPs are excluded from scans
                                 current_depth=1,
                                 max_depth=20  # Support up to 20 hops!
                             )
@@ -1903,7 +1935,7 @@ wait
             # Mark device as fully scanned AFTER SSH attempt (whether successful or not)
             # This prevents re-attempting SSH on the same device in future network scans
             recursively_scanned_devices.add(discovered_ip)
-            logger.debug(f"Marked {discovered_ip} as fully scanned")
+            logger.info(f"✓ Completed processing device {discovered_ip} - marked as fully scanned")
 
             # Note: Legacy non-recursive scanning code was removed here.
             # All network scanning is now handled by scan_device_and_networks_recursive()
@@ -1915,7 +1947,9 @@ wait
             returned_dict[pivot_ip][0].append(discovered_ip)
             returned_dict[pivot_ip][1].append(mac_addr)
             returned_dict[pivot_ip][2].append(ports_info)
-    
+
+        logger.info(f"=== Finished processing all {len(new_devices)} devices on {network_id} ===")
+
     # Log cycle detection results
     if len(network_topology) > 0:
         logger.info(f"Network mapping complete. Discovered {len(network_topology)} unique devices")
