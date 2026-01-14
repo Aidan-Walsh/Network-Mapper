@@ -447,46 +447,15 @@ def attempt_ssh_connection(target_ip, username, password, hop_path=None):
         # hop_path is the path TO the intermediate device, e.g., [pivot_ip] or [pivot_ip, device_a_ip]
         logger.info(f"Testing SSH connection to {target_ip} via hop path {hop_path} with user {username}")
 
-        # Check if we already have a local port forward to this device
-        if target_ip in local_port_forwards:
-            local_port = local_port_forwards[target_ip]
-            logger.debug(f"Using existing local port forward on port {local_port}")
-        else:
-            # We need to establish a forward chain
-            # The last device in hop_path is the one we SSH through
-            via_ip = hop_path[-1]
+        # Ensure the complete forward chain exists
+        # This function will create all necessary intermediate forwards
+        local_port = ensure_local_forward_chain(target_ip, hop_path)
 
-            if via_ip not in ssh_credentials:
-                logger.error(f"No credentials found for intermediate hop {via_ip}")
-                return False
+        if not local_port:
+            logger.error(f"Failed to establish forward chain to {target_ip}")
+            return False
 
-            via_username, via_password = ssh_credentials[via_ip]
-
-            # Determine if via_ip itself needs a forward (if hop_path has more than 1 hop)
-            if len(hop_path) > 1:
-                # via_ip is also accessed through a forward
-                if via_ip not in local_port_forwards:
-                    logger.error(f"No local port forward exists for intermediate hop {via_ip}")
-                    return False
-                via_local_port = local_port_forwards[via_ip]
-            else:
-                # via_ip is directly accessible (no forward needed)
-                via_local_port = None
-
-            # Create the local port forward to target_ip
-            logger.info(f"Creating local port forward to {target_ip} through {via_ip}")
-            local_port = create_local_port_forward(
-                target_ip=target_ip,
-                target_port=22,
-                via_ip=via_ip,
-                via_username=via_username,
-                via_password=via_password,
-                via_local_port=via_local_port
-            )
-
-            if not local_port:
-                logger.error(f"Failed to create local port forward to {target_ip}")
-                return False
+        logger.debug(f"Using local port forward on port {local_port}")
 
         # Now test SSH connection through the local forward
         test_command = (
@@ -812,7 +781,7 @@ def is_device_already_discovered(ip):
 def add_device_to_topology(ip, mac, ports, network, discovery_path, ssh_accessible=False):
     """Add device to global topology with deduplication"""
     global network_topology, discovered_devices, device_network_map
-    
+
     if ip not in network_topology:
         network_topology[ip] = {
             'mac': mac,
@@ -823,7 +792,7 @@ def add_device_to_topology(ip, mac, ports, network, discovery_path, ssh_accessib
             'first_seen': discovery_path
         }
         discovered_devices.add(ip)
-        logger.info(f"New device discovered: {ip}")
+        logger.info(f"✓ New device added to topology: {ip} on network {network} (SSH: {ssh_accessible})")
     else:
         # Device already exists - update information
         existing = network_topology[ip]
@@ -841,10 +810,11 @@ def add_device_to_topology(ip, mac, ports, network, discovery_path, ssh_accessib
             existing['ssh_accessible'] = True
             logger.info(f"Device {ip} now marked as SSH accessible")
     
-    # Add network and discovery path
+    # Add network and discovery path (even for existing devices)
     network_topology[ip]['networks'].add(network)
     network_topology[ip]['discovery_paths'].add(discovery_path)
-    
+    logger.debug(f"Device {ip} now on {len(network_topology[ip]['networks'])} network(s): {network_topology[ip]['networks']}")
+
     # Update device-network mapping
     if ip not in device_network_map:
         device_network_map[ip] = set()
@@ -1248,6 +1218,101 @@ socks5 127.0.0.1 {proxy_port}
             logger.error(f"Error scanning network through proxy: {e}")
     
     return discovered_hosts
+
+def ensure_local_forward_chain(target_ip, hop_path):
+    """Ensure all necessary local port forwards exist to reach target_ip
+
+    Args:
+        target_ip: IP of the target device
+        hop_path: List of IPs showing the path to reach target (devices we hop THROUGH)
+
+    Returns:
+        local_port: The local port that forwards to target_ip, or None if failed
+    """
+    global local_port_forwards, ssh_credentials
+
+    # If target already has a forward, return it
+    if target_ip in local_port_forwards:
+        logger.debug(f"Local forward already exists for {target_ip} on port {local_port_forwards[target_ip]}")
+        return local_port_forwards[target_ip]
+
+    # If no hops needed, no forward needed (direct connection)
+    if not hop_path or len(hop_path) == 0:
+        logger.debug(f"No local forward needed for {target_ip} (direct connection)")
+        return None
+
+    logger.info(f"Creating local forward chain for {target_ip} through path: {hop_path}")
+
+    # Ensure all intermediate forwards exist first
+    for i, hop_ip in enumerate(hop_path):
+        if hop_ip not in local_port_forwards:
+            # This hop needs a forward
+            if i == 0:
+                # First hop - direct connection, no forward needed
+                logger.debug(f"First hop {hop_ip} needs no forward (direct)")
+                continue
+            else:
+                # This hop needs a forward through the previous hops
+                logger.info(f"Creating intermediate forward for {hop_ip} (hop {i+1}/{len(hop_path)})")
+
+                if hop_ip not in ssh_credentials:
+                    logger.error(f"No credentials found for intermediate hop {hop_ip}")
+                    return None
+
+                # Get the device we'll SSH through to reach this hop
+                via_ip = hop_path[i-1]
+
+                if via_ip not in ssh_credentials:
+                    logger.error(f"No credentials found for via device {via_ip}")
+                    return None
+
+                via_username, via_password = ssh_credentials[via_ip]
+
+                # Determine if via_ip itself needs a forward
+                via_local_port = local_port_forwards.get(via_ip, None)
+
+                # Create forward to this intermediate hop
+                forward_port = create_local_port_forward(
+                    target_ip=hop_ip,
+                    target_port=22,
+                    via_ip=via_ip,
+                    via_username=via_username,
+                    via_password=via_password,
+                    via_local_port=via_local_port
+                )
+
+                if not forward_port:
+                    logger.error(f"Failed to create intermediate forward for {hop_ip}")
+                    return None
+
+                logger.info(f"✓ Created intermediate forward: {hop_ip} accessible on localhost:{forward_port}")
+
+    # Now create the forward to the target
+    via_ip = hop_path[-1]  # SSH through the last hop
+
+    if via_ip not in ssh_credentials:
+        logger.error(f"No credentials found for final hop {via_ip}")
+        return None
+
+    via_username, via_password = ssh_credentials[via_ip]
+    via_local_port = local_port_forwards.get(via_ip, None)
+
+    logger.info(f"Creating final forward to {target_ip} through {via_ip}")
+    local_port = create_local_port_forward(
+        target_ip=target_ip,
+        target_port=22,
+        via_ip=via_ip,
+        via_username=via_username,
+        via_password=via_password,
+        via_local_port=via_local_port
+    )
+
+    if local_port:
+        logger.info(f"✓ Complete forward chain established: {target_ip} accessible on localhost:{local_port}")
+        return local_port
+    else:
+        logger.error(f"Failed to create forward to {target_ip}")
+        return None
 
 def recreate_ssh_tunnel_for_device(device_ip):
     """Recreate SSH tunnel for a specific device when it becomes unresponsive
@@ -1760,14 +1825,25 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
             # RECURSIVE: If device has SSH, scan it too!
             if has_ssh:
-                logger.info(f"{'  ' * current_depth}Device {host_ip} has SSH - scanning recursively")
+                logger.info(f"{'  ' * current_depth}Device {host_ip} has SSH open - setting up access")
 
-                # Try SSH with known credentials
                 # The hop_path to reach host_ip is: hop_path + [device_ip]
                 new_hop_path = hop_path + [device_ip]
+
+                # CRITICAL: Ensure local forward exists BEFORE attempting SSH
+                logger.info(f"{'  ' * current_depth}Creating local forward chain to {host_ip}")
+                forward_result = ensure_local_forward_chain(host_ip, new_hop_path)
+
+                if forward_result is None and len(new_hop_path) > 0:
+                    logger.error(f"{'  ' * current_depth}Failed to create local forward to {host_ip}, cannot SSH")
+                    continue
+
+                logger.info(f"{'  ' * current_depth}Local forward ready, attempting SSH to {host_ip}")
+
+                # Try SSH with known credentials
                 for try_user, try_pass in zip(usernames, passwords):
                     if attempt_ssh_connection(host_ip, try_user, try_pass, hop_path=new_hop_path):
-                        logger.info(f"{'  ' * current_depth}SSH successful to {host_ip} via multi-hop")
+                        logger.info(f"{'  ' * current_depth}✓ SSH successful to {host_ip} via multi-hop")
 
                         # Mark as recursively scanned BEFORE recursing to prevent duplicate attempts
                         
@@ -1892,22 +1968,32 @@ wait
             # Try to establish SSH connection for deeper scanning
             ssh_success = False
 
+            # Check if device has SSH port open
+            has_ssh = any(port[0] == '22' for port in ports_info)
+
             # Check if we should create tunnel (avoid cycles)
             logger.info(f"Checking if SSH tunnel should be created for {discovered_ip}")
-            if should_create_ssh_tunnel(discovered_ip, current_path):
-                logger.info(f"Attempting SSH credentials for {discovered_ip} (have {len(usernames)} credentials to try)")
+            if should_create_ssh_tunnel(discovered_ip, current_path) and has_ssh:
+                logger.info(f"Device {discovered_ip} has SSH open, attempting credentials (have {len(usernames)} credentials to try)")
 
                 if len(usernames) == 0:
                     logger.warning("No credentials available! Check credentials.txt file")
 
+                # If this is a direct connection (empty path), ensure we can reach it
+                # For multi-hop, the forward chain will be created by attempt_ssh_connection
+                if len(current_path) > 0:
+                    logger.info(f"Multi-hop path to {discovered_ip}: {current_path}")
+                    logger.info(f"Ensuring forward chain is ready...")
+
                 for username, password in zip(usernames, passwords):
                     logger.debug(f"Trying credential {username}:{'*' * len(password)}")
-                    if attempt_ssh_connection(discovered_ip, username, password, hop_path=current_path):
-                        logger.info(f"SSH access successful to {discovered_ip} with {username}")
-                        ssh_success = True
 
-                        # Store credentials for this device (for potential multi-hop use)
-                        ssh_credentials[discovered_ip] = (username, password)
+                    # Store credentials early so they're available for forward creation
+                    ssh_credentials[discovered_ip] = (username, password)
+
+                    if attempt_ssh_connection(discovered_ip, username, password, hop_path=current_path):
+                        logger.info(f"✓ SSH access successful to {discovered_ip} with {username}")
+                        ssh_success = True
 
                         # Record this access path
                         ssh_access_paths[discovered_ip] = current_path + [discovered_ip]
@@ -1929,6 +2015,8 @@ wait
 
                 if not ssh_success:
                     logger.info(f"No valid SSH credentials found for {discovered_ip}")
+            elif not has_ssh:
+                logger.info(f"Device {discovered_ip} has no SSH port open, skipping SSH attempt")
             else:
                 logger.info(f"SSH tunnel creation skipped for {discovered_ip} (cycle prevention or already accessible)")
 
@@ -1952,18 +2040,29 @@ wait
 
     # Log cycle detection results
     if len(network_topology) > 0:
-        logger.info(f"Network mapping complete. Discovered {len(network_topology)} unique devices")
-        
+        logger.info("=" * 60)
+        logger.info(f"NETWORK MAPPING COMPLETE - Discovered {len(network_topology)} unique devices")
+        logger.info("=" * 60)
+
+        # Log all devices in topology
+        for ip, data in network_topology.items():
+            networks_list = list(data['networks'])
+            ssh_status = "SSH" if data['ssh_accessible'] else "NO-SSH"
+            logger.info(f"  [{ssh_status}] {ip} on {len(networks_list)} network(s): {networks_list}")
+
         # Log devices found on multiple networks (potential cycles)
-        multi_network_devices = {ip: data for ip, data in network_topology.items() 
+        multi_network_devices = {ip: data for ip, data in network_topology.items()
                                if len(data['networks']) > 1}
-        
+
         if multi_network_devices:
-            logger.info(f"Found {len(multi_network_devices)} devices on multiple networks:")
+            logger.info("")
+            logger.info(f"⚠️  Found {len(multi_network_devices)} devices on multiple networks (potential cycles):")
             for ip, data in multi_network_devices.items():
                 networks = list(data['networks'])
-                logger.info(f"  {ip}: {networks}")
-    
+                logger.info(f"  🔄 {ip}: {networks}")
+
+        logger.info("=" * 60)
+
     return returned_dict      
         
     
@@ -2026,7 +2125,7 @@ def generate_ascii_network_map(device_info, discovered_networks):
     """Generate ASCII art network topology with cycle detection for headless systems"""
     global network_topology
     ascii_map = []
-    
+
     # Try to detect if we can use Unicode box drawing characters
     try:
         # Test Unicode support by trying to encode box drawing chars
@@ -2034,7 +2133,7 @@ def generate_ascii_network_map(device_info, discovered_networks):
         use_unicode = True
     except:
         use_unicode = False
-    
+
     if use_unicode:
         ascii_map.append("╔══════════════════════════════════════════════════════════╗")
         ascii_map.append("║                    NETWORK TOPOLOGY MAP                 ║")
@@ -2044,14 +2143,14 @@ def generate_ascii_network_map(device_info, discovered_networks):
         ascii_map.append("|                    NETWORK TOPOLOGY MAP                 |")
         ascii_map.append("+----------------------------------------------------------+")
     ascii_map.append("")
-    
+
     # Get pivot information
     pivot_mac = list(device_info.keys())[0]
     pivot_info = device_info[pivot_mac]
     pivot_name = pivot_info[7]  # hostname
     pivot_ips = pivot_info[1]   # IPs
     pivot_ports = pivot_info[5] # ports
-    
+
     # Display pivot device
     if use_unicode:
         ascii_map.append("┌─ PIVOT DEVICE ────────────────────────────────────────┐")
@@ -2067,43 +2166,55 @@ def generate_ascii_network_map(device_info, discovered_networks):
         ascii_map.append(f"| Open Ports: {len(pivot_ports)} services running{'':<29} |")
         ascii_map.append("+-----------------------------------------------------+")
         ascii_map.append("    |")
-    
+
+    # Use network_topology instead of discovered_networks for complete view
+    logger.info(f"Generating map from network_topology with {len(network_topology)} devices")
+
+    if not network_topology:
+        ascii_map.append("    └─ No devices discovered")
+        return '\n'.join(ascii_map)
+
+    # Group devices by network
+    networks_dict = {}
+    for ip, data in network_topology.items():
+        for network in data['networks']:
+            if network not in networks_dict:
+                networks_dict[network] = []
+            networks_dict[network].append((ip, data))
+
     # Process each network segment
-    for idx, (source_ip, discoveries) in enumerate(discovered_networks.items()):
-        found_ips, found_macs, found_ports = discoveries
-        network_base = '.'.join(source_ip.split('.')[:3]) + '.x'
-        
+    for idx, (network_id, devices) in enumerate(networks_dict.items()):
         # Network segment header
         if use_unicode:
-            if idx < len(discovered_networks) - 1:
+            if idx < len(networks_dict) - 1:
                 ascii_map.append("    ├─ NETWORK SEGMENT ─────────────────────────────────")
             else:
                 ascii_map.append("    └─ NETWORK SEGMENT ─────────────────────────────────")
-                
-            ascii_map.append(f"    │  🌐 Network: {network_base}")
-            ascii_map.append(f"    │  📊 Discovered: {len(found_ips)} devices")
+
+            ascii_map.append(f"    │  🌐 Network: {network_id}")
+            ascii_map.append(f"    │  📊 Discovered: {len(devices)} devices")
             ascii_map.append("    │")
         else:
-            if idx < len(discovered_networks) - 1:
+            if idx < len(networks_dict) - 1:
                 ascii_map.append("    +- NETWORK SEGMENT --------------------------------")
             else:
                 ascii_map.append("    \\- NETWORK SEGMENT --------------------------------")
-                
-            ascii_map.append(f"    |  [N] Network: {network_base}")
-            ascii_map.append(f"    |  Discovered: {len(found_ips)} devices")
+
+            ascii_map.append(f"    |  [N] Network: {network_id}")
+            ascii_map.append(f"    |  Discovered: {len(devices)} devices")
             ascii_map.append("    |")
-        
+
         # List discovered devices
-        for i, ip in enumerate(found_ips):
-            mac = found_macs[i] if i < len(found_macs) and found_macs[i] else "Unknown"
-            ports = found_ports[i] if i < len(found_ports) else []
+        for i, (ip, data) in enumerate(devices):
+            mac = data['mac'] if data['mac'] else "Unknown"
+            ports = data['ports']
+
+            is_last_device = (i == len(devices) - 1)
+            is_last_network = (idx == len(networks_dict) - 1)
             
-            is_last_device = (i == len(found_ips) - 1)
-            is_last_network = (idx == len(discovered_networks) - 1)
-            
-            # SSH accessibility check
-            ssh_accessible = any(port[0] == '22' for port in ports) if ports else False
-            
+            # SSH accessibility check from topology data
+            ssh_accessible = data['ssh_accessible']
+
             if use_unicode:
                 # Device connection symbol
                 if is_last_device and is_last_network:
@@ -2258,50 +2369,54 @@ def generate_network_map(device_info, discovered_networks, output_file="network_
         node_sizes = []
         labels = {}
         
-        # Process discovered networks
+        # Process discovered networks from network_topology
         network_nodes = {}  # Track network nodes for cross-connections
-        
-        for source_ip, discoveries in discovered_networks.items():
-            found_ips, found_macs, found_ports = discoveries
-            
+
+        if not network_topology:
+            logger.warning("No devices in network_topology to visualize")
+            return "network_topology_ascii.txt"
+
+        # Group devices by network
+        networks_dict = {}
+        for ip, data in network_topology.items():
+            for network in data['networks']:
+                if network not in networks_dict:
+                    networks_dict[network] = []
+                networks_dict[network].append((ip, data))
+
+        # Add network segments and devices
+        for network_id, devices in networks_dict.items():
             # Add network segment node
-            network_segment = f"Network {'.'.join(source_ip.split('.')[:3])}.x"
+            network_segment = f"Network {network_id}"
             if network_segment not in G.nodes():
                 G.add_node(network_segment, type='network')
                 G.add_edge(pivot_name, network_segment)
                 network_nodes[network_segment] = []
-            
+
             # Add discovered devices
-            for i, ip in enumerate(found_ips):
+            for ip, data in devices:
                 device_name = f"Device_{ip.replace('.', '_')}"
-                mac = found_macs[i] if i < len(found_macs) and found_macs[i] else "Unknown"
-                ports = found_ports[i] if i < len(found_ports) else []
-                
-                # Check if device exists in enhanced topology
-                device_type = 'discovered'
-                if network_topology and ip in network_topology:
-                    topo_data = network_topology[ip]
-                    device_type = 'accessible' if topo_data['ssh_accessible'] else 'discovered'
-                    
-                    # If device is on multiple networks, mark it specially
-                    if len(topo_data['networks']) > 1:
-                        device_type = 'multi_network'
-                else:
-                    # Fallback to port-based detection
-                    is_ssh_accessible = any(port[0] == '22' for port in ports) if ports else False
-                    device_type = 'accessible' if is_ssh_accessible else 'discovered'
-                
+                mac = data['mac'] if data['mac'] else "Unknown"
+                ports = data['ports']
+
+                # Determine device type
+                device_type = 'accessible' if data['ssh_accessible'] else 'discovered'
+
+                # If device is on multiple networks, mark it specially
+                if len(data['networks']) > 1:
+                    device_type = 'multi_network'
+
                 if device_name not in G.nodes():
                     G.add_node(device_name,
                               type=device_type,
                               ip=ip,
                               mac=mac,
                               ports=ports)
-                
+
                 # Add edge if not already exists
                 if not G.has_edge(network_segment, device_name):
                     G.add_edge(network_segment, device_name)
-                
+
                 network_nodes[network_segment].append(device_name)
         
         # Add cross-network connections for devices on multiple networks
