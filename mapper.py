@@ -1244,48 +1244,46 @@ def ensure_local_forward_chain(target_ip, hop_path):
     logger.info(f"Creating local forward chain for {target_ip} through path: {hop_path}")
 
     # Ensure all intermediate forwards exist first
-    for i, hop_ip in enumerate(hop_path):
+    # Start from index 1 since hop_path[0] (first hop/pivot) is always directly accessible and needs no forward
+    for i in range(1, len(hop_path)):
+        hop_ip = hop_path[i]
         if hop_ip not in local_port_forwards:
-            # This hop needs a forward
-            if i == 0:
-                # First hop - direct connection, no forward needed
-                logger.debug(f"First hop {hop_ip} needs no forward (direct)")
-                continue
-            else:
-                # This hop needs a forward through the previous hops
-                logger.info(f"Creating intermediate forward for {hop_ip} (hop {i+1}/{len(hop_path)})")
+            # This hop needs a forward through the previous hops
+            logger.info(f"Creating intermediate forward for {hop_ip} (hop {i+1}/{len(hop_path)})")
 
-                if hop_ip not in ssh_credentials:
-                    logger.error(f"No credentials found for intermediate hop {hop_ip}")
-                    return None
+            if hop_ip not in ssh_credentials:
+                logger.error(f"No credentials found for intermediate hop {hop_ip}")
+                return None
 
-                # Get the device we'll SSH through to reach this hop
-                via_ip = hop_path[i-1]
+            # Get the device we'll SSH through to reach this hop
+            via_ip = hop_path[i-1]
 
-                if via_ip not in ssh_credentials:
-                    logger.error(f"No credentials found for via device {via_ip}")
-                    return None
+            # Retrieve credentials for the device we're SSH'ing through
+            # (For i==1, this is the pivot which should already have credentials stored)
+            if via_ip not in ssh_credentials:
+                logger.error(f"No credentials found for via device {via_ip}")
+                return None
 
-                via_username, via_password = ssh_credentials[via_ip]
+            via_username, via_password = ssh_credentials[via_ip]
 
-                # Determine if via_ip itself needs a forward
-                via_local_port = local_port_forwards.get(via_ip, None)
+            # Determine if via_ip itself needs a forward
+            via_local_port = local_port_forwards.get(via_ip, None)
 
-                # Create forward to this intermediate hop
-                forward_port = create_local_port_forward(
-                    target_ip=hop_ip,
-                    target_port=22,
-                    via_ip=via_ip,
-                    via_username=via_username,
-                    via_password=via_password,
-                    via_local_port=via_local_port
-                )
+            # Create forward to this intermediate hop
+            forward_port = create_local_port_forward(
+                target_ip=hop_ip,
+                target_port=22,
+                via_ip=via_ip,
+                via_username=via_username,
+                via_password=via_password,
+                via_local_port=via_local_port
+            )
 
-                if not forward_port:
-                    logger.error(f"Failed to create intermediate forward for {hop_ip}")
-                    return None
+            if not forward_port:
+                logger.error(f"Failed to create intermediate forward for {hop_ip}")
+                return None
 
-                logger.info(f"✓ Created intermediate forward: {hop_ip} accessible on localhost:{forward_port}")
+            logger.info(f"✓ Created intermediate forward: {hop_ip} accessible on localhost:{forward_port}")
 
     # Now create the forward to the target
     via_ip = hop_path[-1]  # SSH through the last hop
