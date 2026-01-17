@@ -1288,6 +1288,15 @@ def ensure_local_forward_chain(target_ip, hop_path):
     # Now create the forward to the target
     via_ip = hop_path[-1]  # SSH through the last hop
 
+    # Safety mechanism: if via_ip is the first element (pivot), we're SSH'd into it or running from it
+    # In this case, target should be directly accessible without a local forward
+    if via_ip == hop_path[0] and len(hop_path) == 1:
+        # Only hop is the pivot - this means target is directly accessible from pivot
+        # No local forward needed - caller should use direct connection
+        logger.debug(f"Only hop is pivot {via_ip} - target {target_ip} should be directly accessible, no forward needed")
+        return None
+
+    # For multi-hop or non-pivot scenarios, credentials must exist
     if via_ip not in ssh_credentials:
         logger.error(f"No credentials found for final hop {via_ip}")
         return None
