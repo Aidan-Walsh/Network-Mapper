@@ -1871,7 +1871,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
 def scan_network(joined_macs):
     """Enhanced network scanning with cycle detection and deduplication"""
-    global all_info, tunnel_counter, usernames, passwords, discovered_devices, network_topology
+    global all_info, tunnel_counter, usernames, passwords, discovered_devices, network_topology, ssh_credentials
     
     ranges = all_info[joined_macs][4]
     ips = all_info[joined_macs][1]
@@ -1883,7 +1883,50 @@ def scan_network(joined_macs):
         pivot_ip = ips[index]
         network_range = ranges[index]
         mask = masks[index]
-        
+
+        # CRITICAL: Test and store pivot credentials first (before any scanning)
+        # This ensures pivot credentials are available for creating local forwards
+        if pivot_ip not in ssh_credentials:
+            logger.info(f"Testing credentials for pivot device {pivot_ip}")
+            pivot_creds_found = False
+
+            for username, password in zip(usernames, passwords):
+                logger.debug(f"Testing pivot credential: {username}:{'*' * len(password)}")
+
+                # Test direct SSH connection to pivot
+                test_command = (
+                    f"sshpass -p '{password}' ssh "
+                    f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"-o ConnectTimeout=10 "
+                    f"{username}@{pivot_ip} 'echo connected'"
+                )
+
+                try:
+                    result = subprocess.run(
+                        test_command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=15,
+                        universal_newlines=True
+                    )
+
+                    if result.returncode == 0 and 'connected' in result.stdout:
+                        logger.info(f"✓ Pivot credentials found: {username} works for {pivot_ip}")
+                        ssh_credentials[pivot_ip] = (username, password)
+                        pivot_creds_found = True
+                        break
+                    else:
+                        logger.debug(f"✗ Credential {username} failed for pivot {pivot_ip}")
+                except Exception as e:
+                    logger.debug(f"Error testing credential {username} for pivot: {e}")
+
+            if not pivot_creds_found:
+                logger.warning(f"No valid credentials found for pivot {pivot_ip}")
+                logger.warning(f"This may cause issues with multi-hop SSH forwarding")
+        else:
+            logger.info(f"Pivot {pivot_ip} credentials already stored")
+
         # Generate network identifier for deduplication
         network_id = get_network_identifier(pivot_ip, mask)
         
