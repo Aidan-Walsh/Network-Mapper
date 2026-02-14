@@ -1732,24 +1732,22 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
     # Build a list of IPs to exclude from scanning:
     # 1. Current device's IPs
-    # 2. All IPs of devices in our hop path (to avoid scanning back through our path)
+    # 2. IP of previous device
     exclude_ips_set = set(device_ips)
-
-    # Add only IPs from device before
-    count = 0
-    for hop_device_ip in hop_path:
-        if count == len(hop_path) - 1:
+    exclude_ips_set.update(hop_path[-1])
+    '''# Add only IPs from device before
+    hop_device_ip = hop_path[-1]
         # Look up this device's info to get all its IPs
-            if hop_device_ip in ssh_credentials:
-                # Try to find this device's MAC/info in all_info
-                for mac_key, device_data in all_info.items():
-                    device_data_ips = device_data[1]  # IPs are at index 1
-                    if hop_device_ip in device_data_ips:
-                        # This is the device - add all its IPs to exclude list
-                        exclude_ips_set.update(device_data_ips)
-                        logger.debug(f"{'  ' * current_depth}Excluding parent device {hop_device_ip} IPs: {device_data_ips}")
-                        break
-        count += 1
+    if hop_device_ip in ssh_credentials:
+        # Try to find this device's MAC/info in all_info
+        for mac_key, device_data in all_info.items():
+            device_data_ips = device_data[1]  # IPs are at index 1
+            if hop_device_ip in device_data_ips:
+                # This is the device - add all its IPs to exclude list
+                exclude_ips_set.update(device_data_ips)
+                logger.debug(f"{'  ' * current_depth}Excluding parent device {hop_device_ip} IPs: {device_data_ips}")
+                break'''
+
 
     exclude_ips_list = list(exclude_ips_set)
     logger.debug(f"{'  ' * current_depth}Will exclude {len(exclude_ips_list)} IPs from discovery: {exclude_ips_list}")
