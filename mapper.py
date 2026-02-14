@@ -1734,7 +1734,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
     # 1. Current device's IPs
     # 2. IP of previous device
     exclude_ips_set = set(device_ips)
-    exclude_ips_set.update(hop_path[-1])
+    #exclude_ips_set.update(hop_path[-1])
     '''# Add only IPs from device before
     hop_device_ip = hop_path[-1]
         # Look up this device's info to get all its IPs
@@ -1750,6 +1750,7 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
 
     exclude_ips_list = list(exclude_ips_set)
+    exclude_ips_list.append(hop_path[-1])
     logger.debug(f"{'  ' * current_depth}Will exclude {len(exclude_ips_list)} IPs from discovery: {exclude_ips_list}")
 
     # First, perform ping sweeps on all networks to discover hosts
