@@ -1722,16 +1722,6 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
     logger.info(f"{'  ' * current_depth}Successfully extracted network info from {device_ip}")
 
-    # Create SSH tunnel to this device (SOCKS proxy for port scanning)
-    logger.info(f"{'  ' * current_depth}Creating SSH tunnel to {device_ip}")
-    tunnel_port = create_ssh_tunnel(device_ip, username, password, hop_path=hop_path)
-
-    if not tunnel_port:
-        logger.error(f"{'  ' * current_depth}Failed to create SSH tunnel to {device_ip}")
-        return
-
-    logger.info(f"{'  ' * current_depth}SSH tunnel established to {device_ip} on port {tunnel_port}")
-
     # Get the network information we extracted
     device_info = all_info[remote_mac_key]
     device_ips = device_info[1]      # Device's own IPs
@@ -1740,16 +1730,14 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
     logger.info(f"{'  ' * current_depth}Device has {len(device_ips)} networks to scan")
 
-    # Scan each network discovered on this device
-    time.sleep(2)  # Give tunnel time to establish
-
     # Build a list of IPs to exclude from scanning:
     # 1. Current device's IPs
     # 2. All IPs of devices in our hop path (to avoid scanning back through our path)
     exclude_ips_set = set(device_ips)
 
-    # Add all IPs from devices in our hop path
-    for hop_device_ip in hop_path:
+    # Add only IPs from device before
+    
+    with hop_path[-1] as hop_device_ip:
         # Look up this device's info to get all its IPs
         if hop_device_ip in ssh_credentials:
             # Try to find this device's MAC/info in all_info
@@ -1763,6 +1751,11 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
     exclude_ips_list = list(exclude_ips_set)
     logger.debug(f"{'  ' * current_depth}Will exclude {len(exclude_ips_list)} IPs from discovery: {exclude_ips_list}")
+
+    # First, perform ping sweeps on all networks to discover hosts
+    # This happens BEFORE creating the SSH tunnel since ping sweeps use regular SSH
+    all_discovered_hosts = []  # Collect all hosts from all networks
+    network_to_hosts = {}  # Map network_id to list of discovered hosts
 
     for idx, net_ip in enumerate(device_ips):
         network_range = device_ranges[idx]
@@ -1795,6 +1788,30 @@ def scan_device_and_networks_recursive(device_ip, username, password, hop_path, 
 
         logger.info(f"{'  ' * current_depth}Found {len(discovered_hosts)} hosts on {network_id}")
 
+        # Store discovered hosts for this network
+        network_to_hosts[network_id] = discovered_hosts
+        all_discovered_hosts.extend(discovered_hosts)
+
+    # If no hosts were discovered on any network, we're done
+    if not all_discovered_hosts:
+        logger.info(f"{'  ' * current_depth}No hosts discovered on any network, skipping port scanning")
+        return
+
+    logger.info(f"{'  ' * current_depth}Total hosts discovered across all networks: {len(all_discovered_hosts)}")
+
+    # Now create SSH tunnel for port scanning (only needed if we have hosts to scan)
+    logger.info(f"{'  ' * current_depth}Creating SSH tunnel to {device_ip} for port scanning")
+    tunnel_port = create_ssh_tunnel(device_ip, username, password, hop_path=hop_path)
+
+    if not tunnel_port:
+        logger.error(f"{'  ' * current_depth}Failed to create SSH tunnel to {device_ip}")
+        return
+
+    logger.info(f"{'  ' * current_depth}SSH tunnel established to {device_ip} on port {tunnel_port}")
+    time.sleep(2)  # Give tunnel time to establish
+
+    # Now scan ports on all discovered hosts
+    for network_id, discovered_hosts in network_to_hosts.items():
         # Scan ports on each discovered host
         logger.info(f"{'  ' * current_depth}Processing {len(discovered_hosts)} discovered hosts: {discovered_hosts}")
         for host_ip in discovered_hosts:
