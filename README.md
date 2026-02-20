@@ -167,4 +167,6 @@ The tool operates in phases:
 - **Automatic Retry**: Attempts multiple ports if initial tunnel creation fails
 - **Graceful Cleanup**: Properly terminates tunnels and frees ports on exit
 
+Testing for this program was conducted on manually configured linux machines that were used in a controlled and isolated network environment. 
+
 
