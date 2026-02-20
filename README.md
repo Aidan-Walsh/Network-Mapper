@@ -5,7 +5,7 @@ An advanced network mapping tool that automatically discovers and maps private n
 
 ## Features
 
-- **Automatic Private Network Detection**: Identifies RFC 1918 private networks (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+- **Automatic Private Network Detection**: Identifies private networks (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
 - **SSH Tunneling**: Creates SOCKS proxies through discovered devices for deeper network access
 - **Proxychains Integration**: Uses proxychains with nmap for scanning through SSH tunnels
 - **Network Topology Visualization**: Generates visual network maps showing device relationships
@@ -89,19 +89,15 @@ The tool will:
 - Real-time ASCII network map displayed in console
 - Logging output to console with timestamps
 
-### Generated in GUI Environments:
-- `network_topology.png` - Graphical network topology map (requires GUI/X11)
 
 ### Headless/Terminal-Only Support:
 The tool automatically detects headless environments and provides full functionality without GUI dependencies:
-- ✅ ASCII art network maps with Unicode box drawing (when supported)
-- ✅ Fallback to basic ASCII characters for maximum compatibility  
-- ✅ All scanning and SSH tunneling functionality works unchanged
-- ✅ Complete text-based reports and JSON data export
+- All scanning and SSH tunneling functionality works unchanged
+- Complete text-based reports and JSON data export
 
 ## Security Considerations
 
-⚠️ **WARNING**: This tool is designed for authorized security testing only.
+**WARNING**: This tool is designed for authorized security testing only.
 
 - Only use on networks you own or have explicit permission to test
 - Ensure proper authorization before running scans
@@ -109,31 +105,21 @@ The tool automatically detects headless environments and provides full functiona
 - Tool creates temporary files that are cleaned up automatically
 - All credentials are used for legitimate security assessment purposes
 
-## Network Map Legend
 
-- **Red Square**: Pivot Device (starting point)
-- **Green Diamond**: Network Segment  
-- **Teal Circle**: SSH Accessible Device
-- **Blue Circle**: Discovered Device (no SSH access)
-- **Yellow Triangle**: Multi-Network Device (potential cycle)
-- **Red Dashed Line**: Cross-Network Connection (cycle detected)
 
 ## Troubleshooting
 
 1. **Permission Denied**: Ensure script is run with sudo
-2. **Dependencies Missing**: Run `./setup.sh` to install requirements
+2. **Dependencies Missing**: Run `./setup.sh` to install requirements. Being super user may not work
 3. **SSH Timeout**: Check credentials and network connectivity
-4. **Visualization Issues**: Install Python graphics dependencies: `pip3 install networkx matplotlib numpy`
-5. **Port Conflicts**: 
+4. **Port Conflicts**: 
    - Tool automatically finds available ports, but if all ports are busy:
-   - Check for other proxy tools (Tor, Burp Suite, etc.) using common SOCKS ports
    - Kill existing SSH tunnels: `pkill -f 'ssh.*-D'`
-   - Free up ports 8000-8009, 9050-9054, or 1080-1084
-6. **Proxychains Issues**:
+5. **Proxychains Issues**:
    - Ensure proxychains4 is installed: `apt install proxychains4` or `brew install proxychains-ng`
    - Check if SOCKS proxy is responding: Tool includes automatic health checks
    - Try manual test: `proxychains4 curl http://www.google.com`
-7. **Tunnel Creation Failures**:
+6. **Tunnel Creation Failures**:
    - Check SSH key conflicts: Tool uses password authentication
    - Verify target SSH service is running: `nmap -p 22 target_ip`
    - Check firewall rules allowing outbound SSH connections
@@ -175,11 +161,10 @@ The tool operates in phases:
 - **Infinite Loop Prevention**: Stops cycles in SSH tunnel chains
 
 **SSH Tunnel Port Management:**
-- **Dynamic Port Selection**: Automatically finds available ports from a curated list
-- **Port Fallback Chain**: Tries common SOCKS ports (8000-8009, 9050-9054, 1080-1084, etc.)
+- **Dynamic Port**: Uses port 9050
 - **Port Conflict Resolution**: Detects and avoids already-used ports
 - **Tunnel Health Checking**: Tests SOCKS proxy functionality before use
 - **Automatic Retry**: Attempts multiple ports if initial tunnel creation fails
 - **Graceful Cleanup**: Properly terminates tunnels and frees ports on exit
 
-SSH tunnels use dynamic port forwarding (SOCKS5) with intelligent port selection. Proxychains configurations are dynamically generated for each tunnel with optimized timeouts and local network bypass rules. The tool maintains a global topology map tracking all device relationships and network overlaps. 
+
